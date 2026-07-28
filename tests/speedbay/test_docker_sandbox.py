@@ -13,6 +13,7 @@ import time
 import uuid
 
 import pytest
+from deepagents.backends.sandbox import MAX_OUTPUT_BYTES
 
 from agent.speedbay.docker_sandbox import (
     DEFAULT_TTL_SECONDS,
@@ -112,6 +113,27 @@ def test_timeout_kill_escalation_reports_timeout(sandbox: DockerSandbox) -> None
     res = sandbox.execute("trap '' TERM; sleep 30", timeout=2)
     assert res.exit_code == 137
     assert "timed out" in res.output
+
+
+def test_early_exit_124_is_not_a_timeout(sandbox: DockerSandbox) -> None:
+    """A command exiting 124 on its own (before the deadline) is a plain
+    failure — it must not be mislabeled with the timeout message."""
+    res = sandbox.execute("exit 124", timeout=30)
+    assert res.exit_code == 124
+    assert "timed out" not in res.output
+
+
+def test_timeout_note_survives_truncation(sandbox: DockerSandbox) -> None:
+    """The timeout note must be visible even when the command already
+    produced more than MAX_OUTPUT_BYTES before being killed."""
+    res = sandbox.execute(
+        f"head -c {MAX_OUTPUT_BYTES + 10000} /dev/zero | tr '\\0' 'x'; sleep 30",
+        timeout=2,
+    )
+    assert res.exit_code in (124, 137)
+    assert res.truncated
+    assert "timed out" in res.output[-80:]
+    assert len(res.output.encode()) <= MAX_OUTPUT_BYTES
 
 
 def test_ttl_sweep_removes_expired(sandbox: DockerSandbox) -> None:

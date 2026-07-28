@@ -169,16 +169,19 @@ class DockerSandbox(BaseSandbox):
             return ExecuteResponse(output=f"Command timed out after {effective}s", exit_code=124)
         raw = proc.stdout
         # 124 = timeout(1) TERM; 137 = its KILL escalation after the -k grace
-        # when the command ignores SIGTERM. The elapsed guard keeps a genuine
-        # non-timeout 137 (e.g. OOM kill early in the run) from being mislabeled.
-        timed_out = proc.returncode == 124 or (
-            proc.returncode == 137 and time.monotonic() - started >= effective
-        )
-        if timed_out:
-            raw += f"\nCommand timed out after {effective}s".encode()
-        truncated = len(raw) > MAX_OUTPUT_BYTES
+        # when the command ignores SIGTERM. Both codes can also come from the
+        # command itself (`exit 124`, an early OOM kill), so only label a
+        # timeout when the run actually consumed the full budget.
+        elapsed = time.monotonic() - started
+        timed_out = proc.returncode in (124, 137) and elapsed >= effective
+        # Reserve room for the timeout note so it survives output truncation —
+        # noisy long-running commands are exactly where the diagnosis matters.
+        note = f"\nCommand timed out after {effective}s".encode() if timed_out else b""
+        limit = MAX_OUTPUT_BYTES - len(note)
+        truncated = len(raw) > limit
+        raw = raw[: max(0, limit)] + note
         return ExecuteResponse(
-            output=raw[:MAX_OUTPUT_BYTES].decode("utf-8", "replace"),
+            output=raw.decode("utf-8", "replace"),
             exit_code=proc.returncode,
             truncated=truncated,
         )
