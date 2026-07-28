@@ -69,9 +69,9 @@ security, or implementation quality — only the hygiene rules below.
    OpenAI embedding config") must pass.
 6. **Branch name carries the issue id.** The source branch must match
    `<team>-NNN-*` (lowercase team, e.g. `ope-26-macroscope-config`).
-7. **Explicit staging (observable only).** Fail if the PR body, a commit
-   message, or review text reveals `git add -A`. Otherwise this is unobservable
-   in PR metadata — defer, do not guess.
+7. **Explicit staging (observable only).** Fail if the PR body or a commit
+   message reveals `git add -A`. Otherwise this is unobservable in PR
+   metadata — defer, do not guess.
 8. **One logical change.** Fail only when the PR *clearly* mixes unrelated
    concerns (e.g. a feature bundled with an unrelated refactor named in the body
    or commits). Do not perform numeric atomicity accounting.
