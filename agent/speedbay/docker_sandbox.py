@@ -136,13 +136,15 @@ class DockerSandbox(BaseSandbox):
         Combined stdout+stderr in emission order, truncated at deepagents'
         ``MAX_OUTPUT_BYTES``. The timeout is enforced *inside* the container
         via ``timeout(1)`` so the process actually dies (TERM, then KILL after
-        10s) instead of merely disconnecting the exec client; exit code 124 is
-        returned per the ``timeout(1)`` convention rather than raising, so the
-        agent sees a normal failed command. The client-side timeout remains
-        only as a backstop for a hung docker CLI.
+        10s) instead of merely disconnecting the exec client; a timeout yields
+        exit code 124 (TERM honored) or 137 (KILL escalation) rather than
+        raising, so the agent sees a normal failed command with an explicit
+        timeout message. The client-side timeout remains only as a backstop
+        for a hung docker CLI.
         """
         self._refresh_token_if_stale()
         effective = timeout if timeout and timeout > 0 else DEFAULT_EXECUTE_TIMEOUT
+        started = time.monotonic()
         try:
             # stderr merged into stdout at the pipe so interleaved output keeps
             # its arrival order, as the docstring promises.
@@ -166,8 +168,13 @@ class DockerSandbox(BaseSandbox):
         except subprocess.TimeoutExpired:
             return ExecuteResponse(output=f"Command timed out after {effective}s", exit_code=124)
         raw = proc.stdout
-        if proc.returncode == 124:
-            # timeout(1) killed the command; say so explicitly for the agent.
+        # 124 = timeout(1) TERM; 137 = its KILL escalation after the -k grace
+        # when the command ignores SIGTERM. The elapsed guard keeps a genuine
+        # non-timeout 137 (e.g. OOM kill early in the run) from being mislabeled.
+        timed_out = proc.returncode == 124 or (
+            proc.returncode == 137 and time.monotonic() - started >= effective
+        )
+        if timed_out:
             raw += f"\nCommand timed out after {effective}s".encode()
         truncated = len(raw) > MAX_OUTPUT_BYTES
         return ExecuteResponse(

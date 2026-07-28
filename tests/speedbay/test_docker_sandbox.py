@@ -106,6 +106,14 @@ def test_timeout_returns_124(sandbox: DockerSandbox) -> None:
     assert check.exit_code != 0, "timed-out command still running in the sandbox"
 
 
+def test_timeout_kill_escalation_reports_timeout(sandbox: DockerSandbox) -> None:
+    """A command that ignores SIGTERM exits 137 via timeout's -k KILL
+    escalation — the agent must still see an explicit timeout message."""
+    res = sandbox.execute("trap '' TERM; sleep 30", timeout=2)
+    assert res.exit_code == 137
+    assert "timed out" in res.output
+
+
 def test_ttl_sweep_removes_expired(sandbox: DockerSandbox) -> None:
     """The sweep reaps only containers past the real TTL — never live ones.
 
