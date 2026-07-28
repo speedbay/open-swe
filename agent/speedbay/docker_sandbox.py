@@ -246,12 +246,12 @@ _TOKEN_SCRIPT = (
 def _write_token(container: str) -> None:
     """Mint a fresh installation token and atomically write it into the container."""
     token = _mint_token()
-    proc = _docker("exec", "-i", container, "sh", "-c", _TOKEN_SCRIPT,
-                   input_bytes=token.encode(), timeout=60)
+    proc = _docker(
+        "exec", "-i", container, "sh", "-c", _TOKEN_SCRIPT, input_bytes=token.encode(), timeout=60
+    )
     if proc.returncode != 0:
         raise RuntimeError(
-            f"token write failed in {container}: "
-            f"{proc.stderr.decode('utf-8', 'replace')[:300]}"
+            f"token write failed in {container}: {proc.stderr.decode('utf-8', 'replace')[:300]}"
         )
 
 

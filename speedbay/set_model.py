@@ -93,7 +93,9 @@ def main() -> None:
     args = sys.argv[1:]
     if args and args[0] == "--list":
         for m in SUPPORTED_MODELS:
-            print(f"{m['id']:52} efforts: {', '.join(m['efforts'])} (default: {m['default_effort']})")
+            print(
+                f"{m['id']:52} efforts: {', '.join(m['efforts'])} (default: {m['default_effort']})"
+            )
         return
     if not args:
         settings = get_settings()
