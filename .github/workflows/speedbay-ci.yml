@@ -1,0 +1,59 @@
+# Speed Bay org-layer CI (OPE-27).
+#
+# SPEEDBAY org-layer file — upstream does not own it (new file in an
+# upstream-owned directory, permitted by FORK.md § File placement rule).
+#
+# Upstream's "Agent CI" workflow (ci.yml: lint/format/tests/e2e over the whole
+# tree) is disabled at the repo level (`gh workflow disable "Agent CI"`), not
+# edited — zero merge surface. This workflow covers only Speed Bay-authored
+# code: ruff over the org-layer paths, pytest over the org-layer tests.
+# Upstream's own test suite is upstream's job.
+
+name: Speedbay CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The org layer (FORK.md § Speed Bay org layer). Update alongside that table.
+  ORG_PATHS: >-
+    speedbay
+    agent/integrations/docker_local.py
+    agent/middleware/speedbay_conventions.py
+    agent/utils/speedbay_linear_guard.py
+    tests/middleware/test_speedbay_conventions.py
+    tests/sandbox/test_docker_sandbox.py
+    tests/webhooks/test_speedbay_linear_guard.py
+
+jobs:
+  speedbay:
+    name: Speedbay lint + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Install dependencies
+        run: uv sync --locked --extra dev
+      - name: Ruff lint (org layer)
+        run: uv run ruff check $ORG_PATHS
+      - name: Ruff format check (org layer)
+        run: uv run ruff format --check $ORG_PATHS
+      - name: Org-layer tests
+        # test_docker_sandbox.py self-skips here: no docker sandbox image on
+        # the runner (validate_startup_config raises, module-level skipif).
+        run: >-
+          uv run pytest -vvv
+          tests/middleware/test_speedbay_conventions.py
+          tests/sandbox/test_docker_sandbox.py
+          tests/webhooks/test_speedbay_linear_guard.py

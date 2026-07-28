@@ -162,6 +162,25 @@ Everything we add lives in files upstream does not own:
 | `tests/webhooks/test_speedbay_linear_guard.py` | Self-trigger guard tests (OPE-23) + captured webhook payload fixture |
 | `agent/integrations/docker_local.py` | Docker sandbox backend: per-run containers + git-auth provisioning |
 | `agent/middleware/speedbay_conventions.py` | Appends warehouse's commit/PR contract to the system prompt |
+| `.github/workflows/speedbay-ci.yml` | Org-layer CI: ruff + pytest over Speed Bay code only — see below |
+
+### CI (org-layer only)
+
+`speedbay-ci.yml` lints (`ruff check` / `ruff format --check`) and tests only
+Speed Bay-authored paths (the `ORG_PATHS` list in the workflow — update it
+alongside the table above). Upstream's suites are upstream's job; two upstream
+workflows are disabled **at the repo level** (`gh workflow disable`, a repo
+setting that survives upstream merges — no file edits, zero merge surface):
+
+- **Agent CI** (`ci.yml`) — whole-tree lint/format/tests/Playwright; its tests
+  assert upstream behavior our deviations intentionally changed (kimi-k3
+  rename, emptied team-repo map), so it can never pass here unmodified.
+- **PR Title Lint** (`pr_lint.yml`) — requires conventional-commit titles,
+  mutually exclusive with the `OPE-NNN:` titles the agent-hygiene check
+  enforces.
+
+Re-enable either with `gh workflow enable <name>`. `OpenWiki Update` and
+`Promote main to prod` remain `disabled_fork` (GitHub's fork default).
 
 ### Why the local sandbox needs all this
 
