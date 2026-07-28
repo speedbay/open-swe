@@ -93,7 +93,12 @@ def create(team_key: str | None) -> None:
 
 if __name__ == "__main__":
     if "--create" in sys.argv:
-        team = sys.argv[sys.argv.index("--team") + 1] if "--team" in sys.argv else None
+        team = None
+        if "--team" in sys.argv:
+            idx = sys.argv.index("--team")
+            if idx + 1 >= len(sys.argv) or sys.argv[idx + 1].startswith("-"):
+                raise SystemExit("--team requires a team key, e.g. --team OPE")
+            team = sys.argv[idx + 1]
         create(team)
     else:
         list_webhooks()

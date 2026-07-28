@@ -12,35 +12,30 @@ configurable before the dashboard exists.
 Usage:
     speedbay/set_model.py                       # show current settings
     speedbay/set_model.py <model_id> [effort]   # set agent + subagent default
-    speedbay/set_model.py --list                # show selectable model ids
+    speedbay/set_model.py --list                # show selectable model ids + efforts
 
-Effort is one of: low, medium, high (default: medium).
+Effort defaults to the model's own default; each model supports a different
+set (see --list). An unsupported effort is rejected here because
+get_team_default_model_pair silently falls back to defaults at resolve time.
 """
 
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+# Single source of truth for selectable models/efforts — stdlib-only module,
+# safe to import without the agent's dependencies installed.
+from agent.dashboard.options import FABLE_MODEL_IDS, SUPPORTED_MODELS  # noqa: E402
+
 BASE = "http://localhost:2024"
 NAMESPACE = ["team_settings"]
 KEY = "default"
-
-MODELS = [
-    "anthropic:claude-opus-5",
-    "anthropic:claude-sonnet-5",
-    "anthropic:claude-fable-5",
-    "openai:gpt-5.6-sol",
-    "openai:gpt-5.6-terra",
-    "openai:gpt-5.6-luna",
-    "google_genai:gemini-3.6-flash",
-    # Upstream lists kimi-k3-code, which does not exist on Fireworks; kimi-k3 does.
-    "fireworks:accounts/fireworks/models/kimi-k3",
-    "fireworks:accounts/fireworks/models/deepseek-v4-pro",
-    "fireworks:accounts/fireworks/models/glm-5p2",
-]
 
 
 def _request(path: str, body: dict, method: str = "POST") -> dict | None:
@@ -97,7 +92,10 @@ def _print_models(settings: dict) -> None:
 def main() -> None:
     args = sys.argv[1:]
     if args and args[0] == "--list":
-        print("\n".join(MODELS))
+        for m in SUPPORTED_MODELS:
+            print(
+                f"{m['id']:52} efforts: {', '.join(m['efforts'])} (default: {m['default_effort']})"
+            )
         return
     if not args:
         settings = get_settings()
@@ -110,9 +108,22 @@ def main() -> None:
         return
 
     model_id = args[0]
-    effort = args[1] if len(args) > 1 else "medium"
-    if model_id not in MODELS:
+    option = next((m for m in SUPPORTED_MODELS if m["id"] == model_id), None)
+    if option is None:
         print(f"warning: {model_id!r} is not in the known list; setting it anyway", file=sys.stderr)
+    effort = args[1] if len(args) > 1 else (option["default_effort"] if option else "medium")
+    if option is not None and effort not in option["efforts"]:
+        raise SystemExit(
+            f"{model_id} does not support effort {effort!r} — the runtime would silently "
+            f"fall back to its default. Supported: {', '.join(option['efforts'])}"
+        )
+    if model_id in FABLE_MODEL_IDS and not get_settings().get("fable_enabled"):
+        raise SystemExit(
+            f"{model_id} is gated behind fable_enabled, which is currently false — the "
+            "runtime gate_fable_model guard would silently swap in a non-Fable fallback. "
+            "Enable Fable via the dashboard team settings first (it is a ZDR kill switch; "
+            "this script won't flip it)."
+        )
     set_model(model_id, effort)
     print(f"set default agent model to {model_id} (effort={effort})\nverifying:")
     _print_models(get_settings())
