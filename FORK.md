@@ -204,10 +204,17 @@ review for this fork:
   require copying them) plus fork scoping: upstream bulk we never author
   (`ui/**`, generated `openwiki/**`) is out of review scope; upstream files we
   may carry deviations in (`agent/**`, `tests/**`) stay in scope.
-- **Approvability: deliberately not configured.** There is no
-  `.macroscope/approvability.md` — every fork PR requires manual human
-  approval. Revisit only if this fork ever adopts warehouse's autonomous-land
-  posture.
+- **Approvability: off; findings gate via required thread resolution
+  (OPE-29, supersedes the OPE-26 omission).** Macroscope never approves
+  PRs — the Approvability toggle is off in Macroscope's repo settings and
+  there is no `.macroscope/approvability.md`. Instead, the `main` ruleset
+  sets `required_review_thread_resolution`: every unresolved **inline review
+  thread** — how Macroscope Correctness/CRA findings and human line comments
+  land — must be resolved before merge. (Top-level issue comments and review
+  summaries without inline threads do not gate.) (The built-in Correctness check always concludes
+  `neutral`, even for HIGH findings — verified on PR #8 — so its *presence*
+  is required in the ruleset but blocking comes from thread resolution.)
+  Escape hatch: the ruleset's repo-admin `pull_request` bypass.
 
 ### Why the local sandbox needs all this
 
