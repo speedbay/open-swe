@@ -202,14 +202,16 @@ review for this fork:
   require copying them) plus fork scoping: upstream bulk we never author
   (`ui/**`, generated `openwiki/**`) is out of review scope; upstream files we
   may carry deviations in (`agent/**`, `tests/**`) stay in scope.
-- **Approvability: configured as the blocking-correctness gate (OPE-29,
-  supersedes the OPE-26 omission).** The built-in Correctness check always
-  concludes `neutral` — even for HIGH findings (verified on PR #8) — so
-  requiring it in the branch ruleset cannot block a merge. `approvability.md`
-  sets `conclusion: failure`: blocking-severity correctness findings and
-  sensitive-path changes fail the required Approvability check and stop the
-  merge. Escape hatch: fix + re-review, or the ruleset's repo-admin bypass
-  (a failing required Approvability cannot be cleared by approval alone).
+- **Approvability: off; findings gate via required thread resolution
+  (OPE-29, supersedes the OPE-26 omission).** Macroscope never approves
+  PRs — the Approvability toggle is off in Macroscope's repo settings and
+  there is no `.macroscope/approvability.md`. Instead, the `main` ruleset
+  sets `required_review_thread_resolution`: every review conversation —
+  each Macroscope Correctness/CRA finding and every human comment — must be
+  resolved before merge. (The built-in Correctness check always concludes
+  `neutral`, even for HIGH findings — verified on PR #8 — so its *presence*
+  is required in the ruleset but blocking comes from thread resolution.)
+  Escape hatch: the ruleset's repo-admin `pull_request` bypass.
 
 ### Why the local sandbox needs all this
 
