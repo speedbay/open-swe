@@ -102,7 +102,5 @@ def test_ttl_sweep_removes_expired(monkeypatch: pytest.MonkeyPatch) -> None:
     sb = create_docker_sandbox()
     monkeypatch.setenv("DOCKER_SANDBOX_TTL_SECONDS", "0")
     _sweep_expired()
-    proc = subprocess.run(
-        ["docker", "container", "inspect", sb.id], capture_output=True
-    )
+    proc = subprocess.run(["docker", "container", "inspect", sb.id], capture_output=True)
     assert proc.returncode != 0, "expired container survived the sweep"

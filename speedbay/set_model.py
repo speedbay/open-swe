@@ -102,7 +102,9 @@ def main() -> None:
     if not args:
         settings = get_settings()
         if not settings:
-            print("no team settings stored — agent falls back to DEFAULT_MODEL_ID (openai:gpt-5.6-sol)")
+            print(
+                "no team settings stored — agent falls back to DEFAULT_MODEL_ID (openai:gpt-5.6-sol)"
+            )
             return
         _print_models(settings)
         return

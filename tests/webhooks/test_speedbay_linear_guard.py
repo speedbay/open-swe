@@ -78,6 +78,7 @@ def test_transient_failure_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, *a, **k): ...
         async def __aenter__(self):
             raise ConnectionError("linear down")
+
         async def __aexit__(self, *a): ...
 
     monkeypatch.setattr(guard.httpx, "AsyncClient", Boom)
@@ -95,6 +96,7 @@ def test_failed_call_uses_concurrent_siblings_resolution(monkeypatch: pytest.Mon
             guard._resolved = True  # concurrent sibling resolved first
             guard._cached_id = AUTHOR_ID
             raise ConnectionError("this call's own request failed")
+
         async def __aexit__(self, *a): ...
 
     monkeypatch.setattr(guard.httpx, "AsyncClient", SiblingWinsThenBoom)

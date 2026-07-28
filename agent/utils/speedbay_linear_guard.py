@@ -66,7 +66,9 @@ async def _viewer_id() -> str | None:
     except Exception:
         # Not cached: a transient Linear outage at boot shouldn't disable the
         # guard for the process lifetime — retry on the next delivery.
-        logger.warning("self-trigger guard: could not resolve viewer id (will retry)", exc_info=True)
+        logger.warning(
+            "self-trigger guard: could not resolve viewer id (will retry)", exc_info=True
+        )
         # A concurrent first call may have resolved the viewer while this one
         # failed; use its result instead of failing open (PR #8 review).
         if _resolved:
