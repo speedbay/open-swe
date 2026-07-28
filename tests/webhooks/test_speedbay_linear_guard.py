@@ -3,7 +3,7 @@
 The fixture is a real captured Linear webhook delivery (a forge-bot-authored
 comment on OPE-21), so the payload shape is authoritative, not invented.
 
-Run:  .venv/bin/python -m pytest speedbay/tests/test_linear_guard.py -x -q
+Run:  .venv/bin/python -m pytest tests/webhooks/test_speedbay_linear_guard.py -x -q
 """
 
 from __future__ import annotations

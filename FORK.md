@@ -122,7 +122,7 @@ lookup: `sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder`.
 
 With the Docker backend (OPE-7) live, agent commands run in per-run containers:
 no host filesystem, host env, or host credentials are reachable (negative-proof
-test in `speedbay/tests/test_docker_sandbox.py`). The blanket prohibition on
+test in `tests/sandbox/test_docker_sandbox.py`). The blanket prohibition on
 `cloudflared service install` is therefore lifted **conditionally**: an
 always-on tunnel is acceptable only while `SANDBOX_TYPE=docker` — revert to
 start/stop-per-session if the backend is ever switched back to `local`. What
@@ -158,7 +158,8 @@ Everything we add lives in files upstream does not own:
 | `speedbay/set_model.py` | Reads/sets the agent's default model (no dashboard needed) |
 | `speedbay/create_linear_webhook.py` | Creates/lists the Linear trigger webhooks (needs a temp admin key) |
 | `speedbay/docker/Dockerfile.sandbox` | The sandbox image (`openswe-sandbox:dev`) the docker backend boots |
-| `speedbay/tests/test_docker_sandbox.py` | Docker backend tests incl. the negative isolation proof |
+| `tests/sandbox/test_docker_sandbox.py` | Docker backend tests incl. the negative isolation proof (in upstream's `tests/`, so CI runs it; self-skips without a docker daemon/image) |
+| `tests/webhooks/test_speedbay_linear_guard.py` | Self-trigger guard tests (OPE-23) + captured webhook payload fixture |
 | `agent/integrations/docker_local.py` | Docker sandbox backend: per-run containers + git-auth provisioning |
 | `agent/middleware/speedbay_conventions.py` | Appends warehouse's commit/PR contract to the system prompt |
 
