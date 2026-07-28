@@ -10,8 +10,13 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REAL_GH=/opt/homebrew/bin/gh
 
-GH_TOKEN="$("$HERE/../../.venv/bin/python" "$HERE/../mint_token.py")"
-export GH_TOKEN
-unset GITHUB_TOKEN 2>/dev/null || true
+# Mint only when the token is absent, empty, or the prompt's literal "dummy".
+# A deliberately supplied real GH_TOKEN passes through untouched — the agent
+# may need an identity outside the GitHub App installation.
+if [ "${GH_TOKEN:-dummy}" = "dummy" ]; then
+	GH_TOKEN="$("$HERE/../../.venv/bin/python" "$HERE/../mint_token.py")"
+	export GH_TOKEN
+	unset GITHUB_TOKEN 2>/dev/null || true
+fi
 
 exec "$REAL_GH" "$@"

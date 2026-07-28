@@ -70,11 +70,13 @@ langgraph dev
 curl -s http://localhost:2024/health    # {"status":"healthy"}
 ```
 
-`DASHBOARD_ALLOWED_ORIGINS` must also be empty (or include
-`https://smith.langchain.com`) for LangGraph Studio to connect — a non-matching
-value makes `agent/api/app.py:44` reject Studio's CORS preflight, which the
-browser reports only as "Failed to fetch". Both dashboard vars come back
-together when the dashboard is configured.
+`DASHBOARD_ALLOWED_ORIGINS` must include `https://smith.langchain.com` for
+LangGraph Studio to connect. Empty does **not** work: `create_app()`
+(`agent/api/app.py:44`) skips `CORSMiddleware` entirely when the list is empty,
+so Studio's cross-origin preflights get no CORS headers; a non-matching value
+fails the same way. Either failure surfaces in the browser only as "Failed to
+fetch". Both dashboard vars come back together when the dashboard is
+configured.
 
 ## Webhook tunnel
 

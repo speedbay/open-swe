@@ -47,6 +47,9 @@ DEFAULT_IMAGE = "openswe-sandbox:dev"
 TTL_ENV = "DOCKER_SANDBOX_TTL_SECONDS"
 DEFAULT_TTL_SECONDS = 24 * 3600
 DEFAULT_EXECUTE_TIMEOUT = 300
+# Installation tokens live one hour; refresh with headroom so a long agent run
+# never hands git/gh an expired token (see _refresh_token_if_stale).
+TOKEN_REFRESH_SECONDS = 50 * 60
 
 _LABEL = "openswe.sandbox"
 _CREATED_LABEL = "openswe.created"
@@ -58,8 +61,14 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 _GH_SHIM = """#!/bin/sh
 # Replaces the hardcoded GH_TOKEN=dummy from the agent prompt with the real
-# installation token provisioned by the docker backend.
-GH_TOKEN="$(cat /opt/speedbay/token 2>/dev/null)" exec /usr/bin/gh "$@"
+# installation token provisioned by the docker backend. A deliberately
+# supplied non-dummy GH_TOKEN passes through untouched (same contract as
+# speedbay/bin/gh on the host).
+if [ "${GH_TOKEN:-dummy}" = "dummy" ]; then
+    GH_TOKEN="$(cat /opt/speedbay/token 2>/dev/null)"
+    export GH_TOKEN
+fi
+exec /usr/bin/gh "$@"
 """
 
 _GITCONFIG = """[user]
@@ -112,6 +121,9 @@ class DockerSandbox(BaseSandbox):
 
     def __init__(self, container: str) -> None:
         self._container = container
+        # The factory provisions (and thus mints a fresh token) right before
+        # constructing us, so "now" is an accurate write timestamp.
+        self._token_written = time.time()
 
     @property
     def id(self) -> str:
@@ -121,29 +133,63 @@ class DockerSandbox(BaseSandbox):
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Run ``command`` through ``bash -lc`` inside the container.
 
-        Combined stdout+stderr, truncated at deepagents' ``MAX_OUTPUT_BYTES``.
-        A timeout returns exit code 124 (the ``timeout(1)`` convention) rather
-        than raising, so the agent sees a normal failed command.
+        Combined stdout+stderr in emission order, truncated at deepagents'
+        ``MAX_OUTPUT_BYTES``. The timeout is enforced *inside* the container
+        via ``timeout(1)`` so the process actually dies (TERM, then KILL after
+        10s) instead of merely disconnecting the exec client; exit code 124 is
+        returned per the ``timeout(1)`` convention rather than raising, so the
+        agent sees a normal failed command. The client-side timeout remains
+        only as a backstop for a hung docker CLI.
         """
+        self._refresh_token_if_stale()
         effective = timeout if timeout and timeout > 0 else DEFAULT_EXECUTE_TIMEOUT
         try:
-            proc = _docker(
-                "exec",
-                self._container,
-                "bash",
-                "-lc",
-                command,
-                timeout=effective + 10,
+            # stderr merged into stdout at the pipe so interleaved output keeps
+            # its arrival order, as the docstring promises.
+            proc = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    self._container,
+                    "timeout",
+                    "-k",
+                    "10",
+                    str(effective),
+                    "bash",
+                    "-lc",
+                    command,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=effective + 30,
             )
         except subprocess.TimeoutExpired:
             return ExecuteResponse(output=f"Command timed out after {effective}s", exit_code=124)
-        raw = proc.stdout + proc.stderr
+        raw = proc.stdout
+        if proc.returncode == 124:
+            # timeout(1) killed the command; say so explicitly for the agent.
+            raw += f"\nCommand timed out after {effective}s".encode()
         truncated = len(raw) > MAX_OUTPUT_BYTES
         return ExecuteResponse(
             output=raw[:MAX_OUTPUT_BYTES].decode("utf-8", "replace"),
             exit_code=proc.returncode,
             truncated=truncated,
         )
+
+    def _refresh_token_if_stale(self) -> None:
+        """Re-mint the installation token when it nears its one-hour expiry.
+
+        Best-effort: a failed mint keeps the old token, which is exactly the
+        pre-refresh behavior — non-git commands still work and git fails with
+        an auth error the agent can see.
+        """
+        if time.time() - self._token_written < TOKEN_REFRESH_SECONDS:
+            return
+        try:
+            _write_token(self._container)
+            self._token_written = time.time()
+        except Exception:
+            pass
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Write files via ``docker exec`` stdin; partial success per protocol."""
@@ -184,20 +230,33 @@ class DockerSandbox(BaseSandbox):
         return results
 
 
+_TOKEN_SCRIPT = (
+    f"mkdir -p {_HOOKS_DIR} && "
+    f"cat > {_TOKEN_PATH}.new && mv {_TOKEN_PATH}.new {_TOKEN_PATH} && chmod 600 {_TOKEN_PATH}"
+)
+
+
+def _write_token(container: str) -> None:
+    """Mint a fresh installation token and atomically write it into the container."""
+    token = _mint_token()
+    proc = _docker("exec", "-i", container, "sh", "-c", _TOKEN_SCRIPT,
+                   input_bytes=token.encode(), timeout=60)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"token write failed in {container}: "
+            f"{proc.stderr.decode('utf-8', 'replace')[:300]}"
+        )
+
+
 def _provision(container: str) -> None:
     """Install token, gh shim, gitconfig, and commit-msg hook into the container.
 
     Idempotent; run at create and again at reconnect (the reconnect run
     refreshes the one-hour token).
     """
-    token = _mint_token()
+    _write_token(container)
     hook = (_REPO_ROOT / "speedbay" / "githooks" / "commit-msg").read_bytes()
-    token_script = (
-        f"mkdir -p {_HOOKS_DIR} && "
-        f"cat > {_TOKEN_PATH}.new && mv {_TOKEN_PATH}.new {_TOKEN_PATH} && chmod 600 {_TOKEN_PATH}"
-    )
     steps: list[tuple[str, bytes]] = [
-        (token_script, token.encode()),
         ("cat > /usr/local/bin/gh && chmod 755 /usr/local/bin/gh", _GH_SHIM.encode()),
         (f"cat > {_GITCONFIG_PATH} && chmod 444 {_GITCONFIG_PATH}", _GITCONFIG.encode()),
         (f"cat > {_HOOKS_DIR}/commit-msg && chmod 755 {_HOOKS_DIR}/commit-msg", hook),
@@ -286,7 +345,13 @@ def create_docker_sandbox(sandbox_id: str | None = None) -> DockerSandbox:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"docker run failed: {proc.stderr.decode('utf-8', 'replace')[:300]}")
-    _provision(name)
+    try:
+        _provision(name)
+    except BaseException:
+        # Don't leak a running container nobody holds an id for — retries
+        # after a provisioning failure would otherwise pile up orphans.
+        _docker("rm", "-f", name)
+        raise
     return DockerSandbox(name)
 
 

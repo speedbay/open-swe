@@ -13,6 +13,7 @@ supervisor dependency. Graduate to launchd if this ever needs to survive reboots
 """
 
 import argparse
+import os
 import pathlib
 import signal
 import subprocess
@@ -40,11 +41,23 @@ def _pids(pattern: str) -> list[int]:
 
 
 def backend_pids() -> list[int]:
-    return _pids("langgraph dev")
+    # Match this checkout's venv path, not any "langgraph dev" on the host —
+    # run-dev.sh execs $REPO/.venv/bin/langgraph, so the full cmdline is unique.
+    return _pids(f"{REPO}/.venv/bin/langgraph dev")
 
 
 def tunnel_pids() -> list[int]:
-    return _pids("cloudflared tunnel run")
+    # Match our named tunnel only; other cloudflared tunnels are not ours to kill.
+    return _pids(f"cloudflared tunnel run .*{TUNNEL_NAME}")
+
+
+def _terminate(pids: list[int]) -> None:
+    """SIGTERM each pid, ignoring ones already gone."""
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
 
 def _http_code(url: str, timeout: int = 5) -> str:
@@ -101,6 +114,7 @@ def start() -> int:
     if not _wait_for(LOCAL_URL, 30):
         print(f"FAIL: backend not healthy after 60s — tail {BACKEND_LOG}", file=sys.stderr)
         print(_tail(BACKEND_LOG), file=sys.stderr)
+        _terminate(backend_pids())  # don't leave a half-started backend blocking retry
         return 1
     print(f"backend healthy: {LOCAL_URL}")
 
@@ -109,6 +123,7 @@ def start() -> int:
     if not _wait_for(PUBLIC_URL, 15):
         print(f"FAIL: public URL not healthy after 30s — tail {TUNNEL_LOG}", file=sys.stderr)
         print(_tail(TUNNEL_LOG), file=sys.stderr)
+        _terminate(backend_pids() + tunnel_pids())  # clean slate so the next start can retry
         return 1
     print(f"tunnel healthy:  {PUBLIC_URL}")
     print("LIVE — @openswe comments on Linear tickets now trigger containerized runs.")
@@ -116,17 +131,23 @@ def start() -> int:
 
 
 def stop() -> int:
-    for pid in backend_pids() + tunnel_pids():
-        try:
-            import os
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+    _terminate(backend_pids() + tunnel_pids())
     time.sleep(2)
     if backend_pids() or tunnel_pids():
         print("FAIL: processes survived SIGTERM", file=sys.stderr)
         return 1
-    print(f"stopped. public URL now returns {_http_code(PUBLIC_URL, timeout=8)} (offline).")
+    # Actually confirm the public URL went dark — the Cloudflare edge can keep
+    # serving 200 for a few seconds after the local connector dies.
+    code = _http_code(PUBLIC_URL, timeout=8)
+    for _ in range(5):
+        if code != "200":
+            break
+        time.sleep(2)
+        code = _http_code(PUBLIC_URL, timeout=8)
+    if code == "200":
+        print("FAIL: public URL still returns 200 — tunnel connector still live", file=sys.stderr)
+        return 1
+    print(f"stopped. public URL now returns {code} (offline).")
     return 0
 
 
@@ -142,7 +163,10 @@ def status() -> int:
          "--format", "  {{.Names}}  {{.Status}}"],
         capture_output=True, text=True,
     )
-    print(proc.stdout.rstrip() if proc.returncode == 0 and proc.stdout.strip() else "  (none)")
+    if proc.returncode != 0:
+        print(f"  (docker ps failed: {proc.stderr.strip() or 'unknown error'})")
+    else:
+        print(proc.stdout.rstrip() if proc.stdout.strip() else "  (none)")
     return 0
 
 

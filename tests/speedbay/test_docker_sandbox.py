@@ -9,12 +9,15 @@ so the suite is safe in environments without docker.
 from __future__ import annotations
 
 import subprocess
+import time
 import uuid
 
 import pytest
 
 from agent.speedbay.docker_sandbox import (
+    DEFAULT_TTL_SECONDS,
     DockerSandbox,
+    _image,
     _sweep_expired,
     create_docker_sandbox,
     validate_startup_config,
@@ -96,11 +99,45 @@ def test_timeout_returns_124(sandbox: DockerSandbox) -> None:
     res = sandbox.execute("sleep 30", timeout=2)
     assert res.exit_code == 124
     assert "timed out" in res.output
+    # The timeout must kill the process inside the container, not just
+    # disconnect the exec client — otherwise it keeps running and mutating.
+    # Bracket trick so the check's own bash -lc cmdline doesn't self-match.
+    check = sandbox.execute("pgrep -f 'sleep [3]0'")
+    assert check.exit_code != 0, "timed-out command still running in the sandbox"
 
 
-def test_ttl_sweep_removes_expired(monkeypatch: pytest.MonkeyPatch) -> None:
-    sb = create_docker_sandbox()
-    monkeypatch.setenv("DOCKER_SANDBOX_TTL_SECONDS", "0")
-    _sweep_expired()
-    proc = subprocess.run(["docker", "container", "inspect", sb.id], capture_output=True)
-    assert proc.returncode != 0, "expired container survived the sweep"
+def test_ttl_sweep_removes_expired(sandbox: DockerSandbox) -> None:
+    """The sweep reaps only containers past the real TTL — never live ones.
+
+    Runs against the real daemon with the real TTL: a dedicated container is
+    created with a backdated ``openswe.created`` label instead of zeroing the
+    process-wide TTL, which would reap every operator's live sandbox.
+    """
+    name = f"openswe-{uuid.uuid4().hex[:12]}"
+    backdated = int(time.time()) - DEFAULT_TTL_SECONDS - 60
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            name,
+            "--label",
+            "openswe.sandbox=1",
+            "--label",
+            f"openswe.created={backdated}",
+            _image(),
+            "sleep",
+            "infinity",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    try:
+        _sweep_expired()
+        expired = subprocess.run(["docker", "container", "inspect", name], capture_output=True)
+        assert expired.returncode != 0, "expired container survived the sweep"
+        live = subprocess.run(["docker", "container", "inspect", sandbox.id], capture_output=True)
+        assert live.returncode == 0, "sweep removed a non-expired container"
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
