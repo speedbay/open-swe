@@ -206,9 +206,10 @@ review for this fork:
   (OPE-29, supersedes the OPE-26 omission).** Macroscope never approves
   PRs — the Approvability toggle is off in Macroscope's repo settings and
   there is no `.macroscope/approvability.md`. Instead, the `main` ruleset
-  sets `required_review_thread_resolution`: every review conversation —
-  each Macroscope Correctness/CRA finding and every human comment — must be
-  resolved before merge. (The built-in Correctness check always concludes
+  sets `required_review_thread_resolution`: every unresolved **inline review
+  thread** — how Macroscope Correctness/CRA findings and human line comments
+  land — must be resolved before merge. (Top-level issue comments and review
+  summaries without inline threads do not gate.) (The built-in Correctness check always concludes
   `neutral`, even for HIGH findings — verified on PR #8 — so its *presence*
   is required in the ruleset but blocking comes from thread resolution.)
   Escape hatch: the ruleset's repo-admin `pull_request` bypass.
