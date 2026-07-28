@@ -1,0 +1,61 @@
+# Speed Bay org-layer CI (OPE-27).
+#
+# SPEEDBAY org-layer file — upstream does not own it (new file in an
+# upstream-owned directory, permitted by FORK.md § File placement rule).
+#
+# Upstream's "Agent CI" workflow (ci.yml: lint/format/tests/e2e over the whole
+# tree) is disabled at the repo level (`gh workflow disable "Agent CI"`), not
+# edited — zero merge surface. This workflow covers only Speed Bay-authored
+# code: ruff over the org-layer paths, pytest over the org-layer tests.
+# Upstream's own test suite is upstream's job.
+
+name: Speedbay CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The org layer is three whole directories (FORK.md § Speed Bay org layer):
+  # new org files land in CI scope automatically, no list to maintain.
+  # Upstream-owned files carrying marked SPEEDBAY deviations (agent/server.py,
+  # agent/utils/sandbox.py, agent/webhooks/linear_routes.py, ...) are
+  # deliberately NOT linted here — they follow upstream's style and suites.
+  ORG_PATHS: >-
+    speedbay
+    agent/speedbay
+    tests/speedbay
+
+jobs:
+  speedbay:
+    name: Speedbay lint + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Install dependencies
+        run: uv sync --locked --extra dev
+      - name: Ruff lint (org layer)
+        run: uv run ruff check $ORG_PATHS
+      - name: Ruff format check (org layer)
+        run: uv run ruff format --check $ORG_PATHS
+      - name: Type check (org layer)
+        # basedpyright standard mode (pyproject [tool.basedpyright]); scoped to
+        # org dirs — upstream code is not our type debt.
+        run: npx --yes basedpyright $ORG_PATHS
+      - name: Org-layer tests
+        # Everything under tests/speedbay/ — new test files run automatically.
+        # test_docker_sandbox.py self-skips here: the runner has docker but not
+        # the openswe-sandbox:dev image or the GitHub App key its token mint
+        # needs (validate_startup_config raises, module-level skipif).
+        run: uv run pytest -vvv tests/speedbay

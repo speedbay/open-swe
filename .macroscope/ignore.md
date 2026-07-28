@@ -14,8 +14,8 @@
 # reviewable (a weakened or disabled test must be catchable in review).
 #
 # FORK SCOPE: this repo is a fork of langchain-ai/open-swe. Review effort
-# focuses on the Speed Bay org layer (speedbay/, agent/middleware/speedbay_*,
-# agent/utils/speedbay_*, agent/integrations/docker_local.py) and the marked
+# focuses on the Speed Bay org layer (speedbay/, agent/speedbay/,
+# tests/speedbay/) and the marked
 # deviations in upstream-owned files (FORK.md § Upstream deviations) — so
 # upstream files such as agent/**, tests/**, and scripts/** stay IN scope,
 # while upstream bulk we never author (ui/, generated openwiki/) is excluded

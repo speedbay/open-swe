@@ -35,13 +35,12 @@ import sys
 import time
 import uuid
 
-from deepagents.backends.sandbox import (
-    MAX_OUTPUT_BYTES,
-    BaseSandbox,
+from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
 )
+from deepagents.backends.sandbox import MAX_OUTPUT_BYTES, BaseSandbox
 
 IMAGE_ENV = "DOCKER_SANDBOX_IMAGE"
 DEFAULT_IMAGE = "openswe-sandbox:dev"
@@ -129,13 +128,15 @@ class DockerSandbox(BaseSandbox):
         effective = timeout if timeout and timeout > 0 else DEFAULT_EXECUTE_TIMEOUT
         try:
             proc = _docker(
-                "exec", self._container, "bash", "-lc", command,
+                "exec",
+                self._container,
+                "bash",
+                "-lc",
+                command,
                 timeout=effective + 10,
             )
         except subprocess.TimeoutExpired:
-            return ExecuteResponse(
-                output=f"Command timed out after {effective}s", exit_code=124
-            )
+            return ExecuteResponse(output=f"Command timed out after {effective}s", exit_code=124)
         raw = proc.stdout + proc.stderr
         truncated = len(raw) > MAX_OUTPUT_BYTES
         return ExecuteResponse(
@@ -150,7 +151,11 @@ class DockerSandbox(BaseSandbox):
         for path, data in files:
             parent = shlex.quote(os.path.dirname(path) or ".")
             proc = _docker(
-                "exec", "-i", self._container, "sh", "-c",
+                "exec",
+                "-i",
+                self._container,
+                "sh",
+                "-c",
                 f"mkdir -p {parent} && cat > {shlex.quote(path)}",
                 input_bytes=data,
                 timeout=120,
@@ -164,7 +169,10 @@ class DockerSandbox(BaseSandbox):
         results: list[FileDownloadResponse] = []
         for path in paths:
             proc = _docker(
-                "exec", self._container, "cat", path,
+                "exec",
+                self._container,
+                "cat",
+                path,
                 timeout=120,
             )
             if proc.returncode == 0:
@@ -207,8 +215,12 @@ def _sweep_expired() -> None:
     """Remove sandbox containers older than the TTL. Lazy, best-effort."""
     ttl = int(os.getenv(TTL_ENV, str(DEFAULT_TTL_SECONDS)))
     proc = _docker(
-        "ps", "-a", "--filter", f"label={_LABEL}",
-        "--format", f'{{{{.Names}}}} {{{{.Label "{_CREATED_LABEL}"}}}}',
+        "ps",
+        "-a",
+        "--filter",
+        f"label={_LABEL}",
+        "--format",
+        f'{{{{.Names}}}} {{{{.Label "{_CREATED_LABEL}"}}}}',
     )
     if proc.returncode != 0:
         return
@@ -251,22 +263,29 @@ def create_docker_sandbox(sandbox_id: str | None = None) -> DockerSandbox:
 
     name = f"openswe-{uuid.uuid4().hex[:12]}"
     proc = _docker(
-        "run", "-d",
-        "--name", name,
-        "--label", f"{_LABEL}=1",
-        "--label", f"{_CREATED_LABEL}={int(time.time())}",
-        "--env", f"GIT_CONFIG_GLOBAL={_GITCONFIG_PATH}",
-        "--workdir", "/workspace",
-        "--pids-limit", "2048",
-        "--memory", os.getenv("DOCKER_SANDBOX_MEMORY", "4g"),
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--label",
+        f"{_LABEL}=1",
+        "--label",
+        f"{_CREATED_LABEL}={int(time.time())}",
+        "--env",
+        f"GIT_CONFIG_GLOBAL={_GITCONFIG_PATH}",
+        "--workdir",
+        "/workspace",
+        "--pids-limit",
+        "2048",
+        "--memory",
+        os.getenv("DOCKER_SANDBOX_MEMORY", "4g"),
         _image(),
-        "sleep", "infinity",
+        "sleep",
+        "infinity",
         timeout=120,
     )
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"docker run failed: {proc.stderr.decode('utf-8', 'replace')[:300]}"
-        )
+        raise RuntimeError(f"docker run failed: {proc.stderr.decode('utf-8', 'replace')[:300]}")
     _provision(name)
     return DockerSandbox(name)
 

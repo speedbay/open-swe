@@ -3,7 +3,7 @@
 The fixture is a real captured Linear webhook delivery (a forge-bot-authored
 comment on OPE-21), so the payload shape is authoritative, not invented.
 
-Run:  .venv/bin/python -m pytest speedbay/tests/test_linear_guard.py -x -q
+Run:  .venv/bin/python -m pytest tests/speedbay/test_linear_guard.py -x -q
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import pathlib
 
 import pytest
 
-from agent.utils import speedbay_linear_guard as guard
+from agent.speedbay import linear_guard as guard
 
 FIXTURE = pathlib.Path(__file__).parent / "linear_comment_payload.json"
 PAYLOAD = json.loads(FIXTURE.read_text())
@@ -78,6 +78,7 @@ def test_transient_failure_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, *a, **k): ...
         async def __aenter__(self):
             raise ConnectionError("linear down")
+
         async def __aexit__(self, *a): ...
 
     monkeypatch.setattr(guard.httpx, "AsyncClient", Boom)
@@ -95,6 +96,7 @@ def test_failed_call_uses_concurrent_siblings_resolution(monkeypatch: pytest.Mon
             guard._resolved = True  # concurrent sibling resolved first
             guard._cached_id = AUTHOR_ID
             raise ConnectionError("this call's own request failed")
+
         async def __aexit__(self, *a): ...
 
     monkeypatch.setattr(guard.httpx, "AsyncClient", SiblingWinsThenBoom)

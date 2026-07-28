@@ -25,9 +25,8 @@
 # are deliberately out of scope here too.
 include:
   - "speedbay/**/*.py"
-  - "agent/middleware/speedbay_*.py"
-  - "agent/utils/speedbay_*.py"
-  - "agent/integrations/docker_local.py"
+  - "agent/speedbay/**/*.py"
+  - "tests/speedbay/**/*.py"
 ---
 
 # Python correctness idioms (Speed Bay org layer)

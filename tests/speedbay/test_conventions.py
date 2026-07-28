@@ -16,7 +16,7 @@ from typing import Any, cast
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import SystemMessage
 
-from agent.middleware.speedbay_conventions import (
+from agent.speedbay.conventions import (
     SPEEDBAY_CONVENTIONS,
     SpeedbayConventionsMiddleware,
 )

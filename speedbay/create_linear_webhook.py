@@ -52,13 +52,15 @@ def _gql(query: str, variables: dict | None = None) -> dict:
 
 
 def list_webhooks() -> None:
-    nodes = _gql("{ webhooks { nodes { id label url enabled resourceTypes allPublicTeams team { key } } } }")[
-        "webhooks"
-    ]["nodes"]
+    nodes = _gql(
+        "{ webhooks { nodes { id label url enabled resourceTypes allPublicTeams team { key } } } }"
+    )["webhooks"]["nodes"]
     if not nodes:
         print("no webhooks configured")
     for w in nodes:
-        scope = (w.get("team") or {}).get("key") or ("all public teams" if w["allPublicTeams"] else "?")
+        scope = (w.get("team") or {}).get("key") or (
+            "all public teams" if w["allPublicTeams"] else "?"
+        )
         print(f"  {w['id'][:8]}  {w['label'] or '(no label)':24} {w['url']}")
         print(f"            enabled={w['enabled']} scope={scope} events={w['resourceTypes']}")
 
@@ -73,7 +75,8 @@ def create(team_key: str | None) -> None:
     }
     if team_key:
         teams = _gql(
-            "query($k: String!) { teams(filter: {key: {eq: $k}}) { nodes { id } } }", {"k": team_key}
+            "query($k: String!) { teams(filter: {key: {eq: $k}}) { nodes { id } } }",
+            {"k": team_key},
         )["teams"]["nodes"]
         if not teams:
             raise SystemExit(f"no team with key {team_key}")
