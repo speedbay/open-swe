@@ -202,10 +202,14 @@ review for this fork:
   require copying them) plus fork scoping: upstream bulk we never author
   (`ui/**`, generated `openwiki/**`) is out of review scope; upstream files we
   may carry deviations in (`agent/**`, `tests/**`) stay in scope.
-- **Approvability: deliberately not configured.** There is no
-  `.macroscope/approvability.md` — every fork PR requires manual human
-  approval. Revisit only if this fork ever adopts warehouse's autonomous-land
-  posture.
+- **Approvability: configured as the blocking-correctness gate (OPE-29,
+  supersedes the OPE-26 omission).** The built-in Correctness check always
+  concludes `neutral` — even for HIGH findings (verified on PR #8) — so
+  requiring it in the branch ruleset cannot block a merge. `approvability.md`
+  sets `conclusion: failure`: blocking-severity correctness findings and
+  sensitive-path changes fail the required Approvability check and stop the
+  merge. Escape hatch: fix + re-review, or the ruleset's repo-admin bypass
+  (a failing required Approvability cannot be cleared by approval alone).
 
 ### Why the local sandbox needs all this
 
