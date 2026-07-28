@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from agent.utils import speedbay_linear_guard
+from agent.speedbay import linear_guard as speedbay_linear_guard
 
 from . import common
 from . import linear as service

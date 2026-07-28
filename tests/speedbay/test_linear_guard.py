@@ -3,7 +3,7 @@
 The fixture is a real captured Linear webhook delivery (a forge-bot-authored
 comment on OPE-21), so the payload shape is authoritative, not invented.
 
-Run:  .venv/bin/python -m pytest tests/webhooks/test_speedbay_linear_guard.py -x -q
+Run:  .venv/bin/python -m pytest tests/speedbay/test_linear_guard.py -x -q
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import pathlib
 
 import pytest
 
-from agent.utils import speedbay_linear_guard as guard
+from agent.speedbay import linear_guard as guard
 
 FIXTURE = pathlib.Path(__file__).parent / "linear_comment_payload.json"
 PAYLOAD = json.loads(FIXTURE.read_text())

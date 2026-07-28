@@ -122,7 +122,7 @@ lookup: `sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder`.
 
 With the Docker backend (OPE-7) live, agent commands run in per-run containers:
 no host filesystem, host env, or host credentials are reachable (negative-proof
-test in `tests/sandbox/test_docker_sandbox.py`). The blanket prohibition on
+test in `tests/speedbay/test_docker_sandbox.py`). The blanket prohibition on
 `cloudflared service install` is therefore lifted **conditionally**: an
 always-on tunnel is acceptable only while `SANDBOX_TYPE=docker` — revert to
 start/stop-per-session if the backend is ever switched back to `local`. What
@@ -158,18 +158,19 @@ Everything we add lives in files upstream does not own:
 | `speedbay/set_model.py` | Reads/sets the agent's default model (no dashboard needed) |
 | `speedbay/create_linear_webhook.py` | Creates/lists the Linear trigger webhooks (needs a temp admin key) |
 | `speedbay/docker/Dockerfile.sandbox` | The sandbox image (`openswe-sandbox:dev`) the docker backend boots |
-| `tests/sandbox/test_docker_sandbox.py` | Docker backend tests incl. the negative isolation proof (in upstream's `tests/`, so CI runs it; self-skips without a docker daemon/image) |
-| `tests/webhooks/test_speedbay_linear_guard.py` | Self-trigger guard tests (OPE-23) + captured webhook payload fixture |
-| `agent/integrations/docker_local.py` | Docker sandbox backend: per-run containers + git-auth provisioning |
-| `agent/middleware/speedbay_conventions.py` | Appends warehouse's commit/PR contract to the system prompt |
+| `agent/speedbay/` | **All Speed Bay agent modules**: `conventions.py` (commit/PR contract middleware), `linear_guard.py` (OPE-23 self-trigger guard), `docker_sandbox.py` (OPE-7 docker backend) |
+| `tests/speedbay/` | **All Speed Bay tests** + fixtures: conventions, linear guard, docker sandbox (incl. the negative isolation proof; self-skips without a docker daemon/image/App key) |
 | `.macroscope/` | Macroscope review config (OPE-26): blocking agent-hygiene CRA, org-layer Python correctness idioms, review-scope ignore file — see below |
 | `.github/workflows/speedbay-ci.yml` | Org-layer CI: ruff + pytest over Speed Bay code only — see below |
 
 ### CI (org-layer only)
 
 `speedbay-ci.yml` lints (`ruff check` / `ruff format --check`) and tests only
-Speed Bay-authored paths (the `ORG_PATHS` list in the workflow — update it
-alongside the table above). Upstream's suites are upstream's job; two upstream
+Speed Bay-authored code. The org layer is three whole directories —
+`speedbay/`, `agent/speedbay/`, `tests/speedbay/` — so new org files and tests
+enter CI (and Macroscope idiom scope) automatically; there is no file list to
+maintain. Upstream-owned files carrying marked deviations follow upstream's
+style and are not linted by us. Upstream's suites are upstream's job; two upstream
 workflows are disabled **at the repo level** (`gh workflow disable`, a repo
 setting that survives upstream merges — no file edits, zero merge surface):
 
@@ -221,7 +222,7 @@ backend runs commands with the parent process's environment
 (`LocalShellBackend(..., inherit_env=True)`), so exporting `PATH`,
 `GIT_CONFIG_GLOBAL` and `core.hooksPath` is enough — no upstream code changes.
 
-The Docker backend (`agent/integrations/docker_local.py`, OPE-7) solves this
+The Docker backend (`agent/speedbay/docker_sandbox.py`, OPE-7) solves this
 differently — containers do not inherit host env, so at create/reconnect it
 mints a token on the host and provisions the container with a token file
 (`/opt/speedbay/token`, refreshed on reconnect since installation tokens last
@@ -265,7 +266,7 @@ The upstream-owned files below carry edits. Each is marked in-code with
 |---|---|---|
 | `agent/server.py` | Import + one entry in the `get_agent()` middleware list | Sanctioned registration point; no alternative seam |
 | `agent/dashboard/options.py` | `kimi-k3-code` -> `kimi-k3` in `SUPPORTED_MODELS` and `DEPRECATED_MODEL_REPLACEMENTS` | Upstream ships a model id that does not exist on Fireworks (404 from the platform API). `SUPPORTED_MODEL_IDS` gates model selection, so it cannot be fixed from config. **File upstream so this deviation disappears.** |
-| `agent/webhooks/linear_routes.py` | Import + one guard call after the `botActor` check: drop comments authored by the runtime `LINEAR_API_KEY` (`agent/utils/speedbay_linear_guard.py`, OPE-23) | Loop prevention must run at webhook-processing time; there is no sanctioned seam in the route. Logic lives in the org-layer module; the route carries only the call. |
+| `agent/webhooks/linear_routes.py` | Import + one guard call after the `botActor` check: drop comments authored by the runtime `LINEAR_API_KEY` (`agent/speedbay/linear_guard.py`, OPE-23) | Loop prevention must run at webhook-processing time; there is no sanctioned seam in the route. Logic lives in the org-layer module; the route carries only the call. |
 | `agent/utils/linear_team_repo_map.py` | Upstream's own workspace mapping replaced with an empty dict | Docs designate this file as deployer config. Our Linear team "Open SWE" collided with upstream's entry of the same name and routed to `langchain-ai/open-swe`, which the allowlist rejected. Empty mapping falls back to `DEFAULT_REPO_OWNER`/`DEFAULT_REPO_NAME` (`speedbay/warehouse`); per-comment `repo:owner/name` still overrides. |
 
 Deliberately **not** patched, to keep the merge surface small:
@@ -300,7 +301,7 @@ night to learn:
   `botActor: null` — the route's bot filter does not catch comments posted with
   a plain API key (e.g. forge-bot). Since OPE-23 a deterministic guard closes
   this: the route drops any comment authored by the runtime `LINEAR_API_KEY`'s
-  own user id (`agent/utils/speedbay_linear_guard.py`; fail-open on Linear
+  own user id (`agent/speedbay/linear_guard.py`; fail-open on Linear
   outages so humans are never blocked, retried per delivery). Consequence for
   testing: forge-bot comments can no longer trigger runs — use a personal
   account or the synthetic-delivery scripts. The conventions middleware also

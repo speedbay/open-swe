@@ -1,6 +1,6 @@
 """Tests for the docker sandbox backend (OPE-7) against a real local daemon.
 
-Run:  .venv/bin/python -m pytest tests/sandbox/test_docker_sandbox.py -x -q
+Run:  .venv/bin/python -m pytest tests/speedbay/test_docker_sandbox.py -x -q
 
 Skipped entirely when the docker daemon or the sandbox image is unavailable,
 so the suite is safe in environments without docker.
@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from agent.integrations.docker_local import (
+from agent.speedbay.docker_sandbox import (
     DockerSandbox,
     _sweep_expired,
     create_docker_sandbox,
