@@ -35,13 +35,12 @@ import sys
 import time
 import uuid
 
-from deepagents.backends.sandbox import (
-    MAX_OUTPUT_BYTES,
-    BaseSandbox,
+from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
 )
+from deepagents.backends.sandbox import MAX_OUTPUT_BYTES, BaseSandbox
 
 IMAGE_ENV = "DOCKER_SANDBOX_IMAGE"
 DEFAULT_IMAGE = "openswe-sandbox:dev"

@@ -49,6 +49,10 @@ jobs:
         run: uv run ruff check $ORG_PATHS
       - name: Ruff format check (org layer)
         run: uv run ruff format --check $ORG_PATHS
+      - name: Type check (org layer)
+        # basedpyright standard mode (pyproject [tool.basedpyright]); scoped to
+        # org dirs — upstream code is not our type debt.
+        run: npx --yes basedpyright $ORG_PATHS
       - name: Org-layer tests
         # Everything under tests/speedbay/ — new test files run automatically.
         # test_docker_sandbox.py self-skips here: the runner has docker but not
