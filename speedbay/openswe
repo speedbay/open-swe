@@ -49,8 +49,10 @@ def backend_pids() -> list[int]:
 
 
 def tunnel_pids() -> list[int]:
-    # Match our named tunnel only; other cloudflared tunnels are not ours to kill.
-    return _pids(f"cloudflared tunnel run .*{re.escape(TUNNEL_NAME)}")
+    # Match our named tunnel only; other cloudflared tunnels are not ours to
+    # kill. Anchored to end-of-cmdline (_spawn passes TUNNEL_NAME last) so a
+    # tunnel named e.g. "openswe-staging" is not matched.
+    return _pids(f"cloudflared tunnel run .*{re.escape(TUNNEL_NAME)}$")
 
 
 def _terminate(pids: list[int]) -> None:
