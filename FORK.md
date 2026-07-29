@@ -347,19 +347,33 @@ Backend must be LIVE (above); then:
 cd ui && pnpm install && pnpm dev     # http://localhost:3000 (Vite, port in ui/package.json)
 ```
 
-Local-dev env the login flow needs (INSTALLATION.md §8; all bit us on first
-login — the sample env ships them empty):
+### Login env checklist (INSTALLATION.md §8 §“For the dashboard login to
+succeed” + §Troubleshooting)
 
-- `ui/.env`: `VITE_DASHBOARD_API_BASE_URL="http://localhost:2024"` — without
-  it the login button navigates to :3000 and 404s in the SPA.
-- `.env`: `DASHBOARD_ALLOWED_ORIGINS="http://localhost:3000"` (CORS is off
-  when empty), `DASHBOARD_BASE_URL="http://localhost:3000"`, and a real
-  `DASHBOARD_JWT_SECRET` (`openssl rand -hex 32`) — the sample line
-  `DASHBOARD_JWT_SECRET="" # Generate with: ...` is an *empty* value with an
-  inline comment; auth/login 500s until it is replaced.
+The sample `.env` ships several of these **empty with an inline comment**
+(e.g. `DASHBOARD_JWT_SECRET="" # Generate with: ...`) — each one produces a
+different, unlabeled failure. Complete ALL of them before the first login:
 
-Restart both (`speedbay/openswe stop && start`; re-run `pnpm dev`) after
-changing either env file.
+| Var (file) | Local-dev value | Empty → symptom |
+|---|---|---|
+| `VITE_DASHBOARD_API_BASE_URL` (`ui/.env`) | `http://localhost:2024` | Login button 404s inside the SPA on :3000 |
+| `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` (`.env`) | from the GitHub App (§3c) | `auth/login` 500 “not configured” |
+| `DASHBOARD_JWT_SECRET` (`.env`) | `openssl rand -hex 32` | `auth/login` 500 |
+| `DASHBOARD_API_BASE_URL` (`.env`) | `http://localhost:2024` (http ⇒ SameSite=Lax cookie) | callback/cookie failures |
+| `DASHBOARD_BASE_URL` (`.env`) | `http://localhost:3000` | wrong post-login redirect |
+| `DASHBOARD_ALLOWED_ORIGINS` (`.env`) | `http://localhost:3000` | CORS off — API calls from the UI fail |
+| `TOKEN_ENCRYPTION_KEY` (`.env`) | a **Fernet** key: `.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'` | callback 400 `{"detail":"unknown error"}` (`EncryptionKeyMissingError` in the log) |
+| `CONFIGURED_ADMINS` (`.env`) | comma-separated GitHub logins/emails | admin pages (user mappings, enabled repos) locked |
+
+> Docs say `openssl rand -base64 32` for `TOKEN_ENCRYPTION_KEY`, but the code
+> feeds it straight to `Fernet(...)`, which requires **url-safe** base64 —
+> openssl output containing `+`/`/` is rejected. Use the Fernet generator.
+
+The GitHub App must also list `http://localhost:2024/dashboard/api/auth/callback`
+as a callback URL (§3b) — App settings, not env. Restart both processes
+(`speedbay/openswe stop && start`; re-run `pnpm dev`) after changing either
+env file. When a login fails with a generic JSON error, the real exception is
+in `/tmp/openswe-backend.log`.
 
 Login is the direct GitHub OAuth (`GITHUB_APP_CLIENT_ID/SECRET`), gated by
 `ALLOWED_GITHUB_ORGS="speedbay"` — non-org accounts are rejected server-side,
