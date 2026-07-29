@@ -28,6 +28,7 @@ all survived, and re-add any a merge dropped (each is marked in-code with a
 | 1 | `"docker"` entry for the Docker sandbox backend | the `SANDBOX_FACTORIES` dict in `agent/utils/sandbox.py` |
 | 2 | `SpeedbayConventionsMiddleware`, `PRStandardsMiddleware`, and `QualityGatesMiddleware` in the `middleware=[...]` list | the list inside `get_agent()` in `agent/server.py`, plus their direct imports above |
 | 3 | `docker` branch calling `validate_startup_config()` | inside `validate_sandbox_startup_config()` in `agent/utils/sandbox.py` |
+| 4 | `strip_server_runtime(...)` on the factory config (OPE-15) | `traced_graph_factory` in `agent/utils/tracing.py` + `get_scheduler` in `agent/scheduler.py`; any NEW langgraph.json graph that bypasses `traced_graph_factory` must add the strip |
 
 Identified by symbol, not `file:line` — the middleware list moved from :946 to :953 on the very first upstream merge.
 
@@ -273,8 +274,9 @@ The upstream-owned files below carry edits. Each is marked in-code with
 
 | File | Edit | Why not elsewhere |
 |---|---|---|
-| `agent/server.py` | Imports + entries in the `get_agent()` middleware list (conventions, PR standards, quality gates); both `.with_config(...)` sites bind `strip_server_runtime(config)` (OPE-15) | Sanctioned registration point; no alternative seam. The strip must run where the factory binds config; logic lives in `agent/speedbay/runtime_compat.py`. |
-| `agent/reviewer.py`, `agent/analyzer.py`, `agent/chat.py`, `agent/scheduler.py` | Import + every `.with_config(...)` site binds `strip_server_runtime(config)` (OPE-15) | Same as `agent/server.py`: the factory is the only place the leaked `__pregel_runtime` key can be stripped before it is bound onto the compiled graph. |
+| `agent/server.py` | Imports + two entries in the `get_agent()` middleware list (conventions, quality gates) | Sanctioned registration point; no alternative seam |
+| `agent/utils/tracing.py` | Import + one line in `traced_graph_factory`: pass `strip_server_runtime(config)` to the wrapped factory (OPE-15) | The single chokepoint every traced langgraph.json entrypoint (agent, reviewer, analyzer, chat) routes through — stripping here keeps the four factory files byte-identical to upstream. Logic lives in `agent/speedbay/runtime_compat.py`. |
+| `agent/scheduler.py` | Import + `strip_server_runtime(config or {})` at its single `.with_config(...)` site (OPE-15) | The only langgraph.json factory registered without `traced_graph_factory`, so it needs the strip locally. |
 | `pyproject.toml` | One added floor: `langgraph-api>=0.11.1` (OPE-15) | Upstream pins `langgraph>=1.1.10` unbounded, so uv resolves langgraph 1.2.x against langgraph-api 0.10.3 — below Studio's required 0.11. Single minimal line; re-apply after upstream merges. |
 | `agent/dashboard/options.py` | `kimi-k3-code` -> `kimi-k3` in `SUPPORTED_MODELS` and `DEPRECATED_MODEL_REPLACEMENTS` | Upstream ships a model id that does not exist on Fireworks (404 from the platform API). `SUPPORTED_MODEL_IDS` gates model selection, so it cannot be fixed from config. **File upstream so this deviation disappears.** |
 | `agent/webhooks/linear_routes.py` | Import + one guard call after the `botActor` check: drop comments authored by the runtime `LINEAR_API_KEY` (`agent/speedbay/linear_guard.py`, OPE-23) | Loop prevention must run at webhook-processing time; there is no sanctioned seam in the route. Logic lives in the org-layer module; the route carries only the call. |

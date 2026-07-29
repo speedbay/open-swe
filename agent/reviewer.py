@@ -84,9 +84,6 @@ from .review.trace_context import (
     format_pr_trace_context_prompt,
     prepare_pr_trace_context,
 )
-# SPEEDBAY DEVIATION (OPE-15): factories must not bind the server's
-# __pregel_runtime key; logic lives in the org layer.
-from .speedbay.runtime_compat import strip_server_runtime
 from .runtime import (
     DEFAULT_LLM_MAX_TOKENS,
     DEFAULT_RECURSION_LIMIT,
@@ -1315,11 +1312,7 @@ async def get_reviewer_agent(config: RunnableConfig) -> Pregel:
 
     if thread_id is None or not graph_loaded_for_execution(config):
         logger.info("No thread_id or not for execution, returning reviewer agent without sandbox")
-        # SPEEDBAY DEVIATION (OPE-15): strip langgraph-api's __pregel_runtime
-        # before binding, or graph draw/execution hits _ReadRuntime.override.
-        return create_deep_agent(system_prompt="", tools=[]).with_config(
-            strip_server_runtime(config)
-        )
+        return create_deep_agent(system_prompt="", tools=[]).with_config(config)
 
     configured_model_id = configurable.get("reviewer_model_id")
     configured_effort = configurable.get("reviewer_reasoning_effort")
@@ -1425,8 +1418,7 @@ async def get_reviewer_agent(config: RunnableConfig) -> Pregel:
                 settle_review_check_on_exit,
             ],
         ),
-        # SPEEDBAY DEVIATION (OPE-15): see strip_server_runtime.
-    ).with_config(strip_server_runtime(config))
+    ).with_config(config)
 
 
 traced_reviewer_agent = traced_graph_factory(get_reviewer_agent, REVIEW_TRACING_PROJECT)

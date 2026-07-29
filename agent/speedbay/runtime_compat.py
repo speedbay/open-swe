@@ -14,8 +14,14 @@ then finds it under the same key in pregel configs and calls
 preview graph", observed in OPE-1). Pregel constructs its own ``Runtime`` per
 run; the server's key must never be pre-bound.
 
-Every factory therefore binds ``strip_server_runtime(config)`` instead of the
-raw config. The key name is written literally: it mirrors the private
+The strip runs at two chokepoints instead of at every factory, keeping the
+upstream merge surface minimal: ``agent/utils/tracing.py``
+``traced_graph_factory`` (the wrapper all traced langgraph.json entrypoints —
+agent, reviewer, analyzer, chat — route through) and
+``agent/scheduler.py`` ``get_scheduler`` (the one factory registered
+directly). A new graph registered without ``traced_graph_factory`` must add
+the strip — see the FORK.md "Re-check after every merge" table. The key name
+is written literally: it mirrors the private
 ``langgraph._internal._constants.CONFIG_KEY_RUNTIME``, and if upstream renames
 it this helper degrades to a no-op instead of an import error.
 """

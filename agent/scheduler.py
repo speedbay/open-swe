@@ -9,11 +9,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import RunnableConfig
 
 from .dashboard.schedules import launch_scheduled_agent_run
+from .reconcile import reconcile_stale_runs
 
 # SPEEDBAY DEVIATION (OPE-15): factories must not bind the server's
 # __pregel_runtime key; logic lives in the org layer.
 from .speedbay.runtime_compat import strip_server_runtime
-from .reconcile import reconcile_stale_runs
 
 logger = logging.getLogger(__name__)
 

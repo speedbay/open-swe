@@ -93,7 +93,6 @@ from .middleware.sandbox_circuit_breaker import post_sandbox_unreachable_notific
 # the module directly rather than via .middleware's lazy registry, so
 # agent/middleware/__init__.py stays unmodified and merge-clean.
 from .speedbay.conventions import SpeedbayConventionsMiddleware
-from .speedbay.runtime_compat import strip_server_runtime
 from .speedbay.pr_standards import PRStandardsMiddleware
 from .speedbay.quality_gates import QualityGatesMiddleware
 from .prompt import OPEN_SWE_SHARED_BASE, construct_system_prompt
@@ -762,12 +761,10 @@ async def get_agent(config: RunnableConfig) -> Pregel:
 
     if thread_id is None or not graph_loaded_for_execution(config):
         logger.info("No thread_id or not for execution, returning agent without sandbox")
-        # SPEEDBAY DEVIATION (OPE-15): strip langgraph-api's __pregel_runtime
-        # before binding, or graph draw/execution hits _ReadRuntime.override.
         return create_deep_agent(
             system_prompt="",
             tools=[],
-        ).with_config(strip_server_runtime(config))
+        ).with_config(config)
 
     profile_login = resolve_github_login(as_json_object(config))
     # Team/profile settings are accepted stale for a short TTL so graph factories
@@ -1014,8 +1011,7 @@ async def get_agent(config: RunnableConfig) -> Pregel:
                 SanitizeThinkingBlocksMiddleware(),
             ],
         ),
-        # SPEEDBAY DEVIATION (OPE-15): see strip_server_runtime.
-    ).with_config(strip_server_runtime(config))
+    ).with_config(config)
 
 
 traced_agent = traced_graph_factory(get_agent, AGENT_TRACING_PROJECT)
