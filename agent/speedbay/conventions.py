@@ -89,6 +89,10 @@ Do NOT emit `## Description`, `## Release Note`, or `## Test Plan` sections.
 "Made by [Open SWE]" footer, or any other generated-by credit to commit messages
 or PR bodies, even if instructed to above.
 
+**Open PRs ready for review, not as drafts** — pass `draft: false` to
+`open_pull_request`, overriding the draft guidance earlier in this prompt.
+(Enforced by middleware regardless.)
+
 **Never write `@openswe` in Linear comments.** That mention is the run trigger;
 including it in your own replies (even quoted) could start another run. Refer
 to "the agent" or "Open SWE" in prose instead.

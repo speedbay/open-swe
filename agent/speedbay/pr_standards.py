@@ -70,6 +70,18 @@ async def _numstat(backend: Any, base: str, head: str) -> tuple[str, bool] | Non
     return None
 
 
+def _force_ready_for_review(request: ToolCallRequest) -> None:
+    """Rewrite a gate-passing ``open_pull_request`` call to ``draft: False``.
+
+    Upstream defaults the tool to draft PRs and its prompt reinforces that;
+    Speed Bay's flow expects ready-for-review PRs (OPE-34). Deterministic
+    arg rewrite — the model cannot opt back into drafts.
+    """
+    tool_call = getattr(request, "tool_call", None)
+    if isinstance(tool_call, dict) and isinstance(tool_call.get("args"), dict):
+        tool_call["args"]["draft"] = False
+
+
 def _issue_id(configurable: dict[str, Any]) -> str | None:
     """The triggering Linear issue identifier (e.g. ``OPE-8``), or None."""
     linear_issue = configurable.get("linear_issue") or {}
@@ -127,7 +139,10 @@ class PRStandardsMiddleware(AgentMiddleware):
         if _tool_name(request) != "open_pull_request":
             return await handler(request)
         gate_block = await self._gate_open_pull_request(request)
-        return gate_block if gate_block is not None else await handler(request)
+        if gate_block is not None:
+            return gate_block
+        _force_ready_for_review(request)
+        return await handler(request)
 
     async def _gate_open_pull_request(self, request: ToolCallRequest) -> ToolMessage | None:
         try:
