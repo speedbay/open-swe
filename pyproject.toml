@@ -16,6 +16,10 @@ dependencies = [
     "langgraph-sdk>=0.4.2",
     "langchain>=1.3.9",
     "langgraph>=1.1.10",
+    # OPE-15: langgraph 1.2.x calls Runtime.override(); langgraph-api < 0.11
+    # substitutes a _ReadRuntime without it (AttributeError, 500 on
+    # /assistants/{id}/graph). Keep api new enough for the resolved langgraph.
+    "langgraph-api>=0.11.1",
     "markdownify>=1.2.3",
     "langchain-anthropic>=1.4.6",
     "langgraph-cli[inmem]>=0.4.31",

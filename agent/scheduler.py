@@ -9,6 +9,10 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import RunnableConfig
 
 from .dashboard.schedules import launch_scheduled_agent_run
+
+# SPEEDBAY DEVIATION (OPE-15): factories must not bind the server's
+# __pregel_runtime key; logic lives in the org layer.
+from .speedbay.runtime_compat import strip_server_runtime
 from .reconcile import reconcile_stale_runs
 
 logger = logging.getLogger(__name__)
@@ -37,4 +41,5 @@ def get_scheduler(config: RunnableConfig | None = None):
     builder.add_node("launch", _launch)
     builder.add_edge(START, "launch")
     builder.add_edge("launch", END)
-    return builder.compile().with_config(config or {})
+    # SPEEDBAY DEVIATION (OPE-15): see strip_server_runtime.
+    return builder.compile().with_config(strip_server_runtime(config or {}))

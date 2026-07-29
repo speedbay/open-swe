@@ -57,6 +57,9 @@ from .utils.analyzer_skills import SKILLS_ROUTE, skill_path_for_mode
 from .utils.deferred_model import make_deferred_error_model
 from .utils.github_app import get_github_app_installation_token
 from .utils.model import DEFAULT_LLM_REASONING, make_model, provider_model_kwargs
+# SPEEDBAY DEVIATION (OPE-15): factories must not bind the server's
+# __pregel_runtime key; logic lives in the org layer.
+from .speedbay.runtime_compat import strip_server_runtime
 from .utils.sandbox_paths import aresolve_sandbox_work_dir
 from .utils.sandbox_state import unwrap_sandbox_backend
 from .utils.tracing import REVIEW_TRACING_PROJECT, traced_graph_factory
@@ -168,7 +171,10 @@ async def get_analyzer(config: RunnableConfig) -> Pregel:
     config["recursion_limit"] = DEFAULT_RECURSION_LIMIT
 
     if thread_id is None or not graph_loaded_for_execution(config):
-        return create_deep_agent(system_prompt="", tools=[]).with_config(config)
+        # SPEEDBAY DEVIATION (OPE-15): see strip_server_runtime.
+        return create_deep_agent(system_prompt="", tools=[]).with_config(
+            strip_server_runtime(config)
+        )
 
     async def reconnect_backend(_thread_id: str = thread_id):
         return await ensure_sandbox_for_thread(_thread_id)
@@ -204,7 +210,8 @@ async def get_analyzer(config: RunnableConfig) -> Pregel:
                 TimeoutWrapupMiddleware(),
             ],
         ),
-    ).with_config(config)
+        # SPEEDBAY DEVIATION (OPE-15): see strip_server_runtime.
+    ).with_config(strip_server_runtime(config))
 
 
 traced_analyzer = traced_graph_factory(get_analyzer, REVIEW_TRACING_PROJECT)

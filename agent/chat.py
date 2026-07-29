@@ -68,6 +68,9 @@ from .tools import (
 )
 from .utils import ttl_cache
 from .utils.deferred_model import make_deferred_error_model
+# SPEEDBAY DEVIATION (OPE-15): factories must not bind the server's
+# __pregel_runtime key; logic lives in the org layer.
+from .speedbay.runtime_compat import strip_server_runtime
 from .utils.github_app import get_github_app_installation_token
 from .utils.model import DEFAULT_LLM_REASONING, make_model, provider_model_kwargs
 from .utils.tracing import AGENT_TRACING_PROJECT, traced_graph_factory
@@ -216,7 +219,10 @@ async def get_chat_agent(config: RunnableConfig) -> Pregel:
     thread_id = configurable.get("thread_id")
 
     if thread_id is None or not graph_loaded_for_execution(config):
-        return create_deep_agent(system_prompt="", tools=[]).with_config(config)
+        # SPEEDBAY DEVIATION (OPE-15): see strip_server_runtime.
+        return create_deep_agent(system_prompt="", tools=[]).with_config(
+            strip_server_runtime(config)
+        )
 
     model_id, effort = await _resolve_chat_model(configurable)
     model_id, effort = gate_fable_model(
@@ -253,7 +259,8 @@ async def get_chat_agent(config: RunnableConfig) -> Pregel:
                 SanitizeThinkingBlocksMiddleware(),
             ],
         ),
-    ).with_config(config)
+        # SPEEDBAY DEVIATION (OPE-15): see strip_server_runtime.
+    ).with_config(strip_server_runtime(config))
 
 
 traced_chat_agent = traced_graph_factory(get_chat_agent, AGENT_TRACING_PROJECT)
