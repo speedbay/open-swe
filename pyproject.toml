@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
+    # Direct dependency for the Speed Bay org layer (frozen domain models per
+    # .macroscope/correctness/python-idioms.md); previously transitive-only.
+    "attrs>=25.4.0",
     "deepagents==0.7.0b2",
     "fastapi>=0.139.0",
     "uvicorn>=0.50.2",

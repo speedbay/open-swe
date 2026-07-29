@@ -14,7 +14,8 @@ Strings in, verdict values out. No git, no I/O.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+
+import attrs
 
 # Provenance: hygiene-sections.mjs HYGIENE_SECTIONS (canonical order).
 HYGIENE_SECTIONS = ("Why needed", "Solved / fixed", "Workflow enabled / fixed", "Verification")
@@ -58,7 +59,7 @@ AI_ATTRIBUTION_LINE = re.compile(
 )
 
 
-@dataclass(frozen=True)
+@attrs.frozen
 class Violation:
     """One named hygiene violation: a stable rule id plus a human message."""
 

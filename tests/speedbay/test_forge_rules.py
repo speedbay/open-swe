@@ -13,6 +13,7 @@ from __future__ import annotations
 from agent.speedbay.forge_rules.atomicity import (
     TRACK_A_EFFECTIVE_LOC_CAP,
     TRACK_A_PRODUCTION_FILE_CAP,
+    NumstatRow,
     check_atomicity,
     classify_path,
     parse_numstat,
@@ -74,10 +75,10 @@ def test_classify_path_categories() -> None:
 def test_effective_loc_weights_per_category() -> None:
     verdict = check_atomicity(
         [
-            (100, 0, "agent/api.py"),  # production x1.0 = 100
-            (100, 0, "tests/test_api.py"),  # test x0.5 = 50
-            (100, 0, "README.md"),  # documentation x0.25 = 25
-            (100, 0, "uv.lock"),  # lockfile x0 = 0
+            NumstatRow(100, 0, "agent/api.py"),  # production x1.0 = 100
+            NumstatRow(100, 0, "tests/test_api.py"),  # test x0.5 = 50
+            NumstatRow(100, 0, "README.md"),  # documentation x0.25 = 25
+            NumstatRow(100, 0, "uv.lock"),  # lockfile x0 = 0
         ]
     )
     assert verdict.raw_loc == 400
@@ -87,18 +88,18 @@ def test_effective_loc_weights_per_category() -> None:
 
 
 def test_effective_loc_cap_boundary() -> None:
-    at_cap = check_atomicity([(TRACK_A_EFFECTIVE_LOC_CAP, 0, "agent/api.py")])
+    at_cap = check_atomicity([NumstatRow(TRACK_A_EFFECTIVE_LOC_CAP, 0, "agent/api.py")])
     assert at_cap.passed
-    over = check_atomicity([(TRACK_A_EFFECTIVE_LOC_CAP + 1, 0, "agent/api.py")])
+    over = check_atomicity([NumstatRow(TRACK_A_EFFECTIVE_LOC_CAP + 1, 0, "agent/api.py")])
     assert not over.passed
     assert any("effective LOC" in reason for reason in over.exceeded)
 
 
 def test_production_file_cap_boundary_and_test_exclusion() -> None:
-    rows = [(1, 0, f"agent/mod_{i}.py") for i in range(TRACK_A_PRODUCTION_FILE_CAP)]
-    rows += [(1, 0, f"tests/test_mod_{i}.py") for i in range(20)]  # excluded from file cap
+    rows = [NumstatRow(1, 0, f"agent/mod_{i}.py") for i in range(TRACK_A_PRODUCTION_FILE_CAP)]
+    rows += [NumstatRow(1, 0, f"tests/test_mod_{i}.py") for i in range(20)]  # excluded
     assert check_atomicity(rows).passed
-    rows.append((1, 0, "agent/one_too_many.py"))
+    rows.append(NumstatRow(1, 0, "agent/one_too_many.py"))
     over = check_atomicity(rows)
     assert not over.passed
     assert any("production-file count" in reason for reason in over.exceeded)
@@ -106,9 +107,29 @@ def test_production_file_cap_boundary_and_test_exclusion() -> None:
 
 def test_parse_numstat_including_binary() -> None:
     rows = parse_numstat("10\t2\tagent/api.py\n-\t-\tassets/logo.png\n\nnot a row")
-    assert rows == [(10, 2, "agent/api.py"), (0, 0, "assets/logo.png")]
+    assert rows == [NumstatRow(10, 2, "agent/api.py"), NumstatRow(0, 0, "assets/logo.png")]
     verdict = check_atomicity(rows)
     assert verdict.production_files == 2  # binary file still counts toward the file cap
+
+
+def test_parse_numstat_resolves_rename_notation_to_postimage() -> None:
+    rows = parse_numstat(
+        "5\t5\tsrc/{foo.py => foo.test.ts}\n"
+        "1\t0\t{src => tests}/foo.py\n"
+        "2\t0\told/name.py => tests/name.py\n"
+        "3\t0\tdir/{sub => }/file.py\n"
+    )
+    assert [row.path for row in rows] == [
+        "src/foo.test.ts",
+        "tests/foo.py",
+        "tests/name.py",
+        "dir/file.py",
+    ]
+    # Postimage classification: the three renamed-to-test files weigh 0.5 and
+    # stay out of the production-file cap instead of inflating it.
+    verdict = check_atomicity(rows)
+    assert verdict.production_files == 1  # dir/file.py only
+    assert verdict.effective_loc == (5 + 5) * 0.5 + 1 * 0.5 + 2 * 0.5 + 3 * 1.0
 
 
 # --- hygiene: title / branch / attribution --------------------------------------

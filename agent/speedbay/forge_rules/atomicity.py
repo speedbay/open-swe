@@ -13,7 +13,9 @@ ambiguous paths are counted conservatively as production/runtime weight."
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+
+import attrs
 
 # Provenance: pi-forge/forge/extensions/atomicity-guardrails.ts
 # SCOPE_CATEGORY_WEIGHTS. production/config/migration are full weight; tests
@@ -87,7 +89,7 @@ def classify_path(path: str) -> str:
     return "production"
 
 
-@dataclass(frozen=True)
+@attrs.frozen
 class FileScope:
     """Per-file scope evidence: category, raw LOC, and weighted effective LOC."""
 
@@ -97,7 +99,7 @@ class FileScope:
     effective_loc: float
 
 
-@dataclass(frozen=True)
+@attrs.frozen
 class AtomicityVerdict:
     """Track-A cap verdict with the evidence reviewers must be shown.
 
@@ -114,48 +116,79 @@ class AtomicityVerdict:
     files: tuple[FileScope, ...]
 
 
-def parse_numstat(numstat: str) -> list[tuple[int, int, str]]:
-    """Parse ``git diff --numstat`` output into ``(added, removed, path)`` rows.
+@attrs.frozen
+class NumstatRow:
+    """One ``git diff --numstat`` row: line counts plus the postimage path."""
+
+    added: int
+    removed: int
+    path: str
+
+
+# Git's compact rename notation: ``dir/{old => new}/file``.
+_RENAME_SEGMENT = re.compile(r"\{(.*?) => (.*?)\}")
+
+
+def _postimage_path(path: str) -> str:
+    """Resolve git's rename notation to the postimage (destination) path.
+
+    ``git diff --numstat`` with rename detection emits either the compact
+    ``dir/{old => new}/file`` form or the full ``old/path => new/path`` form;
+    classification must see the destination path, not the brace expression.
+    An empty side (``dir/{sub => }/file``) leaves a doubled slash, collapsed
+    afterwards.
+    """
+    if " => " not in path:
+        return path
+    if _RENAME_SEGMENT.search(path):
+        expanded = _RENAME_SEGMENT.sub(lambda m: m.group(2), path)
+        return re.sub("//+", "/", expanded).lstrip("/")
+    return path.split(" => ", 1)[1]
+
+
+def parse_numstat(numstat: str) -> list[NumstatRow]:
+    """Parse ``git diff --numstat`` output into ``NumstatRow`` rows.
 
     Binary files report ``-`` for both counts; they parse as 0 LOC (the file
-    still counts toward the file cap through its category). Pure string
-    parsing — the caller runs git.
+    still counts toward the file cap through its category). Rename rows are
+    resolved to their postimage path. Pure string parsing — the caller runs
+    git.
     """
-    rows: list[tuple[int, int, str]] = []
+    rows: list[NumstatRow] = []
     for line in numstat.splitlines():
         fields = line.split("\t", 2)
         if len(fields) != 3 or not fields[2]:
             continue
         added, removed, path = fields
         rows.append(
-            (
-                int(added) if added.isdigit() else 0,
-                int(removed) if removed.isdigit() else 0,
-                path,
+            NumstatRow(
+                added=int(added) if added.isdigit() else 0,
+                removed=int(removed) if removed.isdigit() else 0,
+                path=_postimage_path(path),
             )
         )
     return rows
 
 
 def check_atomicity(
-    rows: list[tuple[int, int, str]],
+    rows: list[NumstatRow],
     *,
     effective_loc_cap: int = TRACK_A_EFFECTIVE_LOC_CAP,
     production_file_cap: int = TRACK_A_PRODUCTION_FILE_CAP,
 ) -> AtomicityVerdict:
-    """Apply Track-A cap math to ``(added, removed, path)`` numstat rows.
+    """Apply Track-A cap math to ``NumstatRow`` rows.
 
     Effective LOC = raw LOC x category weight, summed across files;
     production-file count is a separate full-weight cap (RULES.md § 2). Caps
     are inclusive: exactly at the cap passes, one over fails.
     """
     files: list[FileScope] = []
-    for added, removed, path in rows:
-        category = classify_path(path)
-        raw = added + removed
+    for row in rows:
+        category = classify_path(row.path)
+        raw = row.added + row.removed
         files.append(
             FileScope(
-                path=path,
+                path=row.path,
                 category=category,
                 raw_loc=raw,
                 effective_loc=raw * SCOPE_CATEGORY_WEIGHTS[category],

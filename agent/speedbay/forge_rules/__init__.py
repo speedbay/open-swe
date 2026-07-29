@@ -2,8 +2,9 @@
 
 SPEEDBAY ORG-LAYER PACKAGE (FORK.md § Speed Bay org layer). Pure functions
 only — no git, no subprocess, no network, no I/O: rows/strings in, verdict
-values out. The gate middleware (OPE-8, ``agent/speedbay/forge_gates.py``)
-consumes this module; this package deliberately contains no wiring.
+values out. The gate middleware (OPE-8) will consume this module; this
+package deliberately contains no wiring and is not yet imported by any
+non-test code.
 
 Rule sources (values copied with provenance comments; the fork never reads
 warehouse files at runtime):
