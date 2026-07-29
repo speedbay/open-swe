@@ -14,8 +14,8 @@ import asyncio
 import json
 from typing import Any
 
+import attrs
 import pytest
-from attrs import frozen
 from langchain_core.messages import ToolMessage
 
 from agent.speedbay import quality_gates as qg
@@ -27,7 +27,7 @@ from agent.speedbay.quality_gates import (
 )
 
 
-@frozen
+@attrs.define(frozen=True)
 class FakeResponse:
     output: str = ""
     exit_code: int | None = 0
