@@ -13,7 +13,7 @@ forms) runs on both paths so nothing routes around the gate.
 Fail-open for infrastructure problems only (no thread id, unreachable
 sandbox, undiffable base), per quality_gates; rule verdicts always block, and
 a truncated numstat blocks as oversized (missing rows would undercount).
-Corrective rounds are bounded: after ``_MAX_CORRECTIVE_ROUNDS`` blocks on one
+Corrective rounds are bounded: after ``MAX_CORRECTIVE_ROUNDS`` blocks on one
 thread the message flips to escalation (``recoverable_by_agent: false``); the
 human approval-pause wiring lands in OPE-10.
 """
@@ -36,21 +36,14 @@ from langgraph.types import Command
 from ..middleware.pr_creation_guard import is_pr_creation_fallback_command
 from ..utils.sandbox_state import get_sandbox_backend
 
-# Shared org-layer settings and tool-call helpers: quality_gates (OPE-9) owns
-# the sandbox workspace root and diff timeout; both gates must agree on them.
-from .quality_gates import (
-    _DIFF_TIMEOUT_SECONDS,
-    _WORKSPACE,
-    _tool_args,
-    _tool_call_id,
-    _tool_name,
-)
+# Tunable settings live in config.py (OPE-31); both gates share the sandbox
+# workspace root and diff timeout through it.
+from .config import DIFF_TIMEOUT_SECONDS, MAX_CORRECTIVE_ROUNDS, WORKSPACE
+from .quality_gates import _tool_args, _tool_call_id, _tool_name
 from .rules.atomicity import check_atomicity, parse_numstat
 from .rules.hygiene import check_attribution, check_hygiene
 
 logger = logging.getLogger(__name__)
-
-_MAX_CORRECTIVE_ROUNDS = 3
 
 _FALLBACK_ERROR = (
     "New pull requests must be opened with the open_pull_request tool so the "
@@ -68,8 +61,8 @@ async def _numstat(backend: Any, base: str, head: str) -> tuple[str, bool] | Non
     """
     for ref in (f"origin/{base}", base):
         response = await backend.aexecute(
-            f"cd {_WORKSPACE} && git diff --numstat {shlex.quote(ref)}...{shlex.quote(head)}",
-            timeout=_DIFF_TIMEOUT_SECONDS,
+            f"cd {WORKSPACE} && git diff --numstat {shlex.quote(ref)}...{shlex.quote(head)}",
+            timeout=DIFF_TIMEOUT_SECONDS,
         )
         if getattr(response, "exit_code", None) == 0:
             output = getattr(response, "output", "") or ""
@@ -193,7 +186,7 @@ class PRStandardsMiddleware(AgentMiddleware):
 
         rounds = self._rounds.get(str(thread_id), 0) + 1
         self._rounds[str(thread_id)] = rounds
-        escalate = rounds >= _MAX_CORRECTIVE_ROUNDS
+        escalate = rounds >= MAX_CORRECTIVE_ROUNDS
         advice: list[str] = []
         if not verdict.passed:
             advice.append(
@@ -209,7 +202,7 @@ class PRStandardsMiddleware(AgentMiddleware):
             )
         if escalate:
             advice.append(
-                f"This was corrective round {rounds} of {_MAX_CORRECTIVE_ROUNDS}: stop "
+                f"This was corrective round {rounds} of {MAX_CORRECTIVE_ROUNDS}: stop "
                 "retrying and surface the gate failure to a human for approval."
             )
         logger.info(

@@ -33,9 +33,10 @@ from typing import Any
 
 import httpx
 
+from .config import LINEAR_GQL_URL
+
 logger = logging.getLogger(__name__)
 
-_LINEAR_GQL = "https://api.linear.app/graphql"
 
 # Process-lifetime cache: (resolved-flag, viewer id). The runtime key does not
 # rotate while the server is up; a restart clears it. Concurrent first calls
@@ -58,7 +59,7 @@ async def _viewer_id() -> str | None:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                _LINEAR_GQL,
+                LINEAR_GQL_URL,
                 json={"query": "{ viewer { id } }"},
                 headers={"Authorization": key, "Content-Type": "application/json"},
             )
