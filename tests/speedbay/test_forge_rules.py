@@ -57,7 +57,7 @@ def _body(**overrides: str) -> str:
 
 
 def test_classify_path_categories() -> None:
-    assert classify_path("agent/speedbay/forge_gates.py") == "production"
+    assert classify_path("agent/speedbay/pr_standards.py") == "production"
     assert classify_path("pyproject.toml") == "production"  # ambiguous -> conservative
     assert classify_path("tests/speedbay/test_forge_rules.py") == "test"
     assert classify_path("ui/src/__tests__/app.test.ts") == "test"
