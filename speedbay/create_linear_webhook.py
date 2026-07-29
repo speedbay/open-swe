@@ -8,7 +8,7 @@ secret. The API path still accepts one, so webhooks are created here with the
 
 Two facts learned the hard way, encoded in this script:
 
-* Only workspace **admins** can manage webhooks — the forge-bot runtime key
+* Only workspace **admins** can manage webhooks — the swe-service-bot runtime key
   gets ``Invalid role: admin required``. Pass a temporary admin key via the
   ``LINEAR_ADMIN_KEY`` env var and revoke it after use. It is never stored.
 * ``allPublicTeams: true`` does **not** cover private Linear teams. Each

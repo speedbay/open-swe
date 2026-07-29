@@ -1,9 +1,9 @@
 """Atomicity cap math as pure functions (OPE-14).
 
-Ports the effective-LOC model from warehouse
-``pi-forge/forge/references/atomicity/RULES.md`` § 2 and the category weights
-from ``pi-forge/forge/extensions/atomicity-guardrails.ts``
-(``SCOPE_CATEGORY_WEIGHTS``). Numstat-shaped rows plus a path classifier in,
+Ports the effective-LOC model from the warehouse harness's
+``references/atomicity/RULES.md`` § 2 and the category weights from its
+``extensions/atomicity-guardrails.ts`` (``SCOPE_CATEGORY_WEIGHTS``;
+harness paths as of the fork). Numstat-shaped rows plus a path classifier in,
 verdict out. No git, no I/O.
 
 Classification is conservative by design: an undeclared or ambiguous path
@@ -17,7 +17,7 @@ import re
 
 import attrs
 
-# Provenance: pi-forge/forge/extensions/atomicity-guardrails.ts
+# Provenance: warehouse harness extensions/atomicity-guardrails.ts
 # SCOPE_CATEGORY_WEIGHTS. production/config/migration are full weight; tests
 # reduced; documentation low; generated/lockfile/fixture/snapshot excluded.
 SCOPE_CATEGORY_WEIGHTS: dict[str, float] = {
@@ -32,7 +32,7 @@ SCOPE_CATEGORY_WEIGHTS: dict[str, float] = {
     "snapshot": 0.0,
 }
 
-# Provenance: pi-forge/forge/references/atomicity/RULES.md § 2, Track A.
+# Provenance: warehouse harness references/atomicity/RULES.md § 2, Track A.
 TRACK_A_EFFECTIVE_LOC_CAP = 300
 TRACK_A_PRODUCTION_FILE_CAP = 10
 

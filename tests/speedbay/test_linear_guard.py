@@ -1,7 +1,8 @@
 """Tests for the Linear self-trigger guard (OPE-23).
 
-The fixture is a real captured Linear webhook delivery (a forge-bot-authored
-comment on OPE-21), so the payload shape is authoritative, not invented.
+The fixture is a real captured Linear webhook delivery (a service-bot-authored
+comment on OPE-21; author fields renamed to the current swe-service-bot
+account, ids as captured), so the payload shape is authoritative, not invented.
 
 Run:  .venv/bin/python -m pytest tests/speedbay/test_linear_guard.py -x -q
 """

@@ -2,9 +2,9 @@
  "action": "create",
  "actor": {
   "id": "12d6edbb-7ea2-41c4-ab88-75af217661b3",
-  "name": "forge-bot@speedbay.com",
-  "email": "forge-bot@speedbay.com",
-  "url": "https://linear.app/speed-bay/profiles/forge-bot",
+  "name": "swe-service-bot@speedbay.com",
+  "email": "swe-service-bot@speedbay.com",
+  "url": "https://linear.app/speed-bay/profiles/swe-service-bot",
   "type": "user"
  },
  "createdAt": "2026-07-28T04:25:25.148Z",
@@ -12,7 +12,7 @@
   "id": "aaa8a8f7-438e-42a0-a4dc-454455f671f0",
   "createdAt": "2026-07-28T04:25:25.148Z",
   "updatedAt": "2026-07-28T04:25:25.055Z",
-  "body": "@forge-bot@speedbay.com Linear trigger verified end to end \u2014 created `docs/openswe-live-test.md` (single heading + one confirmation sentence, only that file changed) and opened PR: https://github.com/speedbay/warehouse/pull/811",
+  "body": "@swe-service-bot@speedbay.com Linear trigger verified end to end \u2014 created `docs/openswe-live-test.md` (single heading + one confirmation sentence, only that file changed) and opened PR: https://github.com/speedbay/warehouse/pull/811",
   "issueId": "8b382c05-dd64-4b75-9c06-a277bb423bf7",
   "userId": "12d6edbb-7ea2-41c4-ab88-75af217661b3",
   "reactionData": [],
@@ -20,9 +20,9 @@
   "botActor": null,
   "user": {
    "id": "12d6edbb-7ea2-41c4-ab88-75af217661b3",
-   "name": "forge-bot@speedbay.com",
-   "email": "forge-bot@speedbay.com",
-   "url": "https://linear.app/speed-bay/profiles/forge-bot"
+   "name": "swe-service-bot@speedbay.com",
+   "email": "swe-service-bot@speedbay.com",
+   "url": "https://linear.app/speed-bay/profiles/swe-service-bot"
   },
   "issue": {
    "id": "8b382c05-dd64-4b75-9c06-a277bb423bf7",

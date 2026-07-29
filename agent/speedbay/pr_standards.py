@@ -2,7 +2,7 @@
 
 SPEEDBAY org-layer file — upstream does not own it. Before a PR opens, diff
 the requested head against the PR base inside the sandbox (``git diff
---numstat``), apply the OPE-14 rule content (``forge_rules`` — this module
+--numstat``), apply the OPE-14 rule content (``rules`` — this module
 adds no rules), and block with a corrective ToolMessage on any violation.
 Interception mirrors ``pr_creation_guard`` / ``quality_gates`` (OPE-9): the
 PR gate runs on the async path (``open_pull_request`` is async-only); the
@@ -35,8 +35,6 @@ from langgraph.types import Command
 
 from ..middleware.pr_creation_guard import is_pr_creation_fallback_command
 from ..utils.sandbox_state import get_sandbox_backend
-from .forge_rules.atomicity import check_atomicity, parse_numstat
-from .forge_rules.hygiene import check_attribution, check_hygiene
 
 # Shared org-layer settings and tool-call helpers: quality_gates (OPE-9) owns
 # the sandbox workspace root and diff timeout; both gates must agree on them.
@@ -47,6 +45,8 @@ from .quality_gates import (
     _tool_call_id,
     _tool_name,
 )
+from .rules.atomicity import check_atomicity, parse_numstat
+from .rules.hygiene import check_attribution, check_hygiene
 
 logger = logging.getLogger(__name__)
 
