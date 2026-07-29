@@ -89,7 +89,7 @@ def classify_path(path: str) -> str:
     return "production"
 
 
-@attrs.frozen
+@attrs.define(frozen=True)
 class FileScope:
     """Per-file scope evidence: category, raw LOC, and weighted effective LOC."""
 
@@ -99,7 +99,7 @@ class FileScope:
     effective_loc: float
 
 
-@attrs.frozen
+@attrs.define(frozen=True)
 class AtomicityVerdict:
     """Track-A cap verdict with the evidence reviewers must be shown.
 
@@ -116,7 +116,7 @@ class AtomicityVerdict:
     files: tuple[FileScope, ...]
 
 
-@attrs.frozen
+@attrs.define(frozen=True)
 class NumstatRow:
     """One ``git diff --numstat`` row: line counts plus the postimage path.
 

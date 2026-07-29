@@ -59,7 +59,7 @@ AI_ATTRIBUTION_LINE = re.compile(
 )
 
 
-@attrs.frozen
+@attrs.define(frozen=True)
 class Violation:
     """One named hygiene violation: a stable rule id plus a human message."""
 
