@@ -338,6 +338,38 @@ doesn't reach 200, or when an instance is already running. Logs:
 `/tmp/openswe-backend.log`, `/tmp/openswe-tunnel.log`. Once `start` reports
 LIVE, every `@openswe` Linear comment triggers a containerized run.
 
+## Dashboard (OPE-11)
+
+The in-tree dashboard is the forge-dash replacement — we write no custom UI.
+Backend must be LIVE (above); then:
+
+```bash
+cd ui && pnpm install && pnpm dev     # http://localhost:3000 (Vite, port in ui/package.json)
+```
+
+Login is the direct GitHub OAuth (`GITHUB_APP_CLIENT_ID/SECRET`), gated by
+`ALLOWED_GITHUB_ORGS="speedbay"` — non-org accounts are rejected server-side,
+fail-closed (`tests/dashboard/test_dashboard_org_login_gate.py`,
+`test_public_repo_org_gate.py`).
+
+### forge-dash → dashboard mapping
+
+| forge-dash job (warehouse) | Dashboard surface |
+|---|---|
+| Run queue + issue overview (attention/running/awaiting-merge/queued groups) | Agents → thread/run history (per-thread status; no issue-centric grouping — see gaps) |
+| Per-run detail: scorecard, gate evidence, issue snapshot | Thread view: messages, plan, linked PR; approvals page holds gate state (OPE-10) |
+| Actions: restart run, resume gate, reconcile | Follow-up message in the thread; approvals page approve/reject; a rerun is a new `@openswe` trigger |
+| Daily spend + cost caps (cost-tracker) | Per-agent usage/cost (`agent_usage`) + fork spend limits (OPE-18) |
+| Daemon operational snapshot / dispatch queue | n/a — no daemon here; runs are webhook-triggered (accepted gap) |
+| Linear state snapshot | Linear itself; threads link their triggering issue/PR |
+| — (never had) | Per-user **model profiles** (cheap Fireworks vs Claude routing), Admin: enabled repos + user mappings, review styles, automations |
+
+### Gaps (input to the pilot verdict, not a build order)
+
+- No issue-centric "needs attention" grouping with reasons (gate/failed/stalled/ci-failing); triage happens per-thread.
+- No run scorecard equivalent — review evidence lives in Macroscope, gate state in the approvals page.
+- No transactional restart with path selection; re-trigger via Linear comment instead.
+
 ## Spend limits (OPE-18)
 
 **Open SWE enforces no per-run cost cap of its own.** Nothing in the fork stops
