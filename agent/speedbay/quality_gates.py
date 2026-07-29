@@ -29,7 +29,7 @@ import shlex
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
-from attrs import frozen
+import attrs
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from langchain_core.messages import ToolMessage
 from langgraph.config import get_config
@@ -54,7 +54,7 @@ _PRECONDITION_MARKERS = (
 )
 
 
-@frozen
+@attrs.define(frozen=True)
 class GateCommand:
     """One CI-equivalent validation command for a project.
 
@@ -184,7 +184,7 @@ PROJECT_QUALITY_GATES: dict[str, tuple[GateCommand, ...]] = {
 }
 
 
-@frozen
+@attrs.define(frozen=True)
 class GateFailure:
     """Evidence for one failed quality-gate command.
 

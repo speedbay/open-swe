@@ -41,11 +41,12 @@ violates one of the idioms below; stay quiet on intentional patterns.
 
 ## Domain models and boundaries
 
-- Domain models must be immutable by default and use `attrs.frozen`. Flag a new
-  mutable domain model (plain class with reassigned attributes, `@dataclass`
-  without `frozen=True`, or `attrs` without `frozen`) unless mutability is the
-  domain behavior being modeled and that invariant is documented at the boundary
-  that exposes it.
+- Domain models must be immutable by default and use
+  `@attrs.define(frozen=True)`. Flag the equivalent but non-preferred
+  `@attrs.frozen` and bare `@frozen` spellings, or a new mutable domain model
+  (plain class with reassigned attributes, `@dataclass` without `frozen=True`,
+  or `attrs` without `frozen=True`) unless mutability is the domain behavior
+  being modeled and that invariant is documented at the boundary that exposes it.
 - Flag persistence, transport, or framework concerns leaking into domain models
   — database row shapes, ORM base classes, or raw API payloads defining the
   domain type. Adapt at the edge instead of letting the wire shape become the
