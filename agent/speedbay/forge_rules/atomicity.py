@@ -118,10 +118,14 @@ class AtomicityVerdict:
 
 @attrs.frozen
 class NumstatRow:
-    """One ``git diff --numstat`` row: line counts plus the postimage path."""
+    """One ``git diff --numstat`` row: line counts plus the postimage path.
 
-    added: int
-    removed: int
+    Counts must be non-negative — a negative count would silently shrink
+    ``raw_loc``/``effective_loc`` and could flip an over-cap verdict to pass.
+    """
+
+    added: int = attrs.field(validator=attrs.validators.ge(0))
+    removed: int = attrs.field(validator=attrs.validators.ge(0))
     path: str
 
 
@@ -146,13 +150,26 @@ def _postimage_path(path: str) -> str:
     return path.split(" => ", 1)[1]
 
 
+def _count(field: str) -> int:
+    """Parse one numstat count: a non-negative integer, or ``-`` (binary) as 0.
+
+    Anything else is a malformed row and raises ``ValueError`` — the gate must
+    fail closed rather than silently undercount an over-cap change set.
+    """
+    if field == "-":
+        return 0
+    if not field.isdigit():
+        raise ValueError(f"malformed numstat count {field!r}")
+    return int(field)
+
+
 def parse_numstat(numstat: str) -> list[NumstatRow]:
     """Parse ``git diff --numstat`` output into ``NumstatRow`` rows.
 
     Binary files report ``-`` for both counts; they parse as 0 LOC (the file
     still counts toward the file cap through its category). Rename rows are
-    resolved to their postimage path. Pure string parsing — the caller runs
-    git.
+    resolved to their postimage path. A row with any other non-integer count
+    raises ``ValueError``. Pure string parsing — the caller runs git.
     """
     rows: list[NumstatRow] = []
     for line in numstat.splitlines():
@@ -162,8 +179,8 @@ def parse_numstat(numstat: str) -> list[NumstatRow]:
         added, removed, path = fields
         rows.append(
             NumstatRow(
-                added=int(added) if added.isdigit() else 0,
-                removed=int(removed) if removed.isdigit() else 0,
+                added=_count(added),
+                removed=_count(removed),
                 path=_postimage_path(path),
             )
         )

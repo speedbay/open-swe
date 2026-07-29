@@ -10,6 +10,8 @@ Run:  .venv/bin/python -m pytest tests/speedbay/test_forge_rules.py -q
 
 from __future__ import annotations
 
+import pytest
+
 from agent.speedbay.forge_rules.atomicity import (
     TRACK_A_EFFECTIVE_LOC_CAP,
     TRACK_A_PRODUCTION_FILE_CAP,
@@ -110,6 +112,17 @@ def test_parse_numstat_including_binary() -> None:
     assert rows == [NumstatRow(10, 2, "agent/api.py"), NumstatRow(0, 0, "assets/logo.png")]
     verdict = check_atomicity(rows)
     assert verdict.production_files == 2  # binary file still counts toward the file cap
+
+
+def test_parse_numstat_rejects_malformed_counts_and_negative_rows() -> None:
+    with pytest.raises(ValueError, match="malformed numstat count 'x'"):
+        parse_numstat("x\t200\tagent/api.py")
+    with pytest.raises(ValueError, match="malformed numstat count '-3'"):
+        parse_numstat("-3\t0\tagent/api.py")
+    with pytest.raises(ValueError):
+        NumstatRow(-1, 0, "agent/api.py")
+    with pytest.raises(ValueError):
+        NumstatRow(0, -1, "agent/api.py")
 
 
 def test_parse_numstat_resolves_rename_notation_to_postimage() -> None:
