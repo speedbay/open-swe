@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shlex
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
@@ -304,11 +305,13 @@ async def _changed_paths(backend: Any, base: str, head: str = "HEAD") -> list[st
     Diffs the requested ``head`` ref (not the sandbox's current checkout,
     which may have moved after the push). Tries ``origin/<base>`` first (the
     push target), then ``<base>``; None means the diff could not be computed
-    (fail-open at the caller).
+    (fail-open at the caller). Refs are shell-quoted: they come from
+    model-controlled tool args, and an unquoted metacharacter ref (e.g.
+    ``feature;true``) could yield exit 0 with no paths — skipping every gate.
     """
     for ref in (f"origin/{base}", base):
         response = await backend.aexecute(
-            f"cd {_WORKSPACE} && git diff --name-only {ref}...{head}",
+            f"cd {_WORKSPACE} && git diff --name-only {shlex.quote(ref)}...{shlex.quote(head)}",
             timeout=_DIFF_TIMEOUT_SECONDS,
         )
         if getattr(response, "exit_code", None) == 0:

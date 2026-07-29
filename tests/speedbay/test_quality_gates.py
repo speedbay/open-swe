@@ -247,6 +247,25 @@ def test_middleware_diffs_requested_head_branch(demo_gates, monkeypatch) -> None
     assert backend.commands[0].endswith("git diff --name-only origin/main...feature-x")
 
 
+def test_diff_refs_are_shell_quoted_against_hostile_branch_names(demo_gates, monkeypatch) -> None:
+    """Metacharacter refs cannot break out of the git diff invocation.
+
+    An unquoted ``feature;true`` would make the shell run ``true`` after the
+    failed diff — exit 0 with no paths, silently skipping every gate.
+    """
+    backend = FakeBackend({"git diff --name-only": FakeResponse(output="")})
+    _wire(monkeypatch, backend)
+
+    async def handler(request: Any) -> Any:
+        return "pr-opened"
+
+    request = _request(base="main;rm -rf /", head="feature;true")
+    assert _run(QualityGatesMiddleware().awrap_tool_call(request, handler)) == "pr-opened"
+    assert backend.commands[0].endswith(
+        "git diff --name-only 'origin/main;rm -rf /'...'feature;true'"
+    )
+
+
 def test_middleware_fails_open_when_diff_unavailable(demo_gates, monkeypatch, caplog) -> None:
     backend = FakeBackend(
         {"git diff --name-only": FakeResponse(output="fatal: bad ref", exit_code=128)}
