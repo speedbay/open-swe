@@ -2079,7 +2079,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "attrs", specifier = ">=25.4.0" },
+    { name = "attrs", specifier = ">=26.1.0" },
     { name = "cryptography", specifier = ">=49.0.0" },
     { name = "deepagents", specifier = "==0.7.0b2" },
     { name = "exa-py", specifier = ">=2.16.0" },
