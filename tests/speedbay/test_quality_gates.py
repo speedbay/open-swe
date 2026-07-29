@@ -143,11 +143,11 @@ def test_failing_command_blocks_with_name_and_bounded_tail(demo_gates) -> None:
     assert failure.command_name == "demo lint"
     assert failure.kind == "failure"
     assert failure.output_tail.endswith("TAIL-MARKER")
-    assert len(failure.output_tail) == qg._OUTPUT_TAIL_CHARS
+    assert len(failure.output_tail) == qg.OUTPUT_TAIL_CHARS
     # first failure stops the run — the scoped command never executed
     assert len(backend.commands) == 1 and "run-lint" in backend.commands[0]
     # the true tail is captured command-side, before backend head-truncation
-    assert backend.commands[0].endswith(f"| tail -c {qg._OUTPUT_TAIL_CHARS}")
+    assert backend.commands[0].endswith(f"| tail -c {qg.OUTPUT_TAIL_CHARS}")
 
 
 def test_precondition_failure_distinguished_by_exit_127(demo_gates) -> None:

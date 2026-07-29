@@ -15,10 +15,9 @@ import uuid
 import pytest
 from deepagents.backends.sandbox import MAX_OUTPUT_BYTES
 
+from agent.speedbay.config import DEFAULT_TTL_SECONDS, sandbox_image
 from agent.speedbay.docker_sandbox import (
-    DEFAULT_TTL_SECONDS,
     DockerSandbox,
-    _image,
     _sweep_expired,
     create_docker_sandbox,
     validate_startup_config,
@@ -156,7 +155,7 @@ def test_ttl_sweep_removes_expired(sandbox: DockerSandbox) -> None:
             "openswe.sandbox=1",
             "--label",
             f"openswe.created={backdated}",
-            _image(),
+            sandbox_image(),
             "sleep",
             "infinity",
         ],

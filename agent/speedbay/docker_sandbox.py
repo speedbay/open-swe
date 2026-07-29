@@ -42,14 +42,14 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import MAX_OUTPUT_BYTES, BaseSandbox
 
-IMAGE_ENV = "DOCKER_SANDBOX_IMAGE"
-DEFAULT_IMAGE = "openswe-sandbox:dev"
-TTL_ENV = "DOCKER_SANDBOX_TTL_SECONDS"
-DEFAULT_TTL_SECONDS = 24 * 3600
-DEFAULT_EXECUTE_TIMEOUT = 300
-# Installation tokens live one hour; refresh with headroom so a long agent run
-# never hands git/gh an expired token (see _refresh_token_if_stale).
-TOKEN_REFRESH_SECONDS = 50 * 60
+# Tunable settings live in config.py (OPE-31): image, TTL, memory, timeouts.
+from .config import (
+    DEFAULT_EXECUTE_TIMEOUT,
+    TOKEN_REFRESH_SECONDS,
+    sandbox_image,
+    sandbox_memory,
+    sandbox_ttl_seconds,
+)
 
 _LABEL = "openswe.sandbox"
 _CREATED_LABEL = "openswe.created"
@@ -83,10 +83,6 @@ _GITCONFIG = """[user]
 [safe]
 \tdirectory = *
 """
-
-
-def _image() -> str:
-    return os.getenv(IMAGE_ENV, DEFAULT_IMAGE)
 
 
 def _docker(
@@ -282,7 +278,7 @@ def _provision(container: str) -> None:
 
 def _sweep_expired() -> None:
     """Remove sandbox containers older than the TTL. Lazy, best-effort."""
-    ttl = int(os.getenv(TTL_ENV, str(DEFAULT_TTL_SECONDS)))
+    ttl = sandbox_ttl_seconds()
     proc = _docker(
         "ps",
         "-a",
@@ -347,8 +343,8 @@ def create_docker_sandbox(sandbox_id: str | None = None) -> DockerSandbox:
         "--pids-limit",
         "2048",
         "--memory",
-        os.getenv("DOCKER_SANDBOX_MEMORY", "4g"),
-        _image(),
+        sandbox_memory(),
+        sandbox_image(),
         "sleep",
         "infinity",
         timeout=120,
@@ -377,7 +373,7 @@ def validate_startup_config() -> None:
             "SANDBOX_TYPE=docker but the Docker daemon is unreachable: "
             f"{proc.stderr.decode('utf-8', 'replace')[:200]}"
         )
-    image = _image()
+    image = sandbox_image()
     proc = _docker("image", "inspect", image)
     if proc.returncode != 0:
         raise ValueError(

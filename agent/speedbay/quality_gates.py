@@ -38,12 +38,15 @@ from langgraph.types import Command
 
 from ..utils.sandbox_state import get_sandbox_backend
 
-logger = logging.getLogger(__name__)
+# Tunable settings live in config.py (OPE-31); wiring constants stay here.
+from .config import (
+    COMMAND_TIMEOUT_SECONDS,
+    DIFF_TIMEOUT_SECONDS,
+    OUTPUT_TAIL_CHARS,
+    WORKSPACE,
+)
 
-_WORKSPACE = "/workspace"
-_COMMAND_TIMEOUT_SECONDS = 15 * 60
-_DIFF_TIMEOUT_SECONDS = 120
-_OUTPUT_TAIL_CHARS = 2000
+logger = logging.getLogger(__name__)
 _TIMEOUT_EXIT_CODE = 124  # docker exec timeout convention (see docker_sandbox)
 _PRECONDITION_EXIT_CODE = 127  # shell "command not found"
 _PRECONDITION_MARKERS = (
@@ -280,10 +283,10 @@ async def run_quality_gates(backend: Any, changed_paths: Sequence[str]) -> GateF
             # final error lines the agent needs. `tail -c` bounds output before
             # the backend ever sees it; pipefail preserves the exit code.
             full = (
-                f"cd {_WORKSPACE}/{project} && set -o pipefail && "
-                f"( {gate.command} ) 2>&1 | tail -c {_OUTPUT_TAIL_CHARS}"
+                f"cd {WORKSPACE}/{project} && set -o pipefail && "
+                f"( {gate.command} ) 2>&1 | tail -c {OUTPUT_TAIL_CHARS}"
             )
-            response = await backend.aexecute(full, timeout=_COMMAND_TIMEOUT_SECONDS)
+            response = await backend.aexecute(full, timeout=COMMAND_TIMEOUT_SECONDS)
             exit_code = getattr(response, "exit_code", None)
             output = getattr(response, "output", "") or ""
             if exit_code == 0:
@@ -294,7 +297,7 @@ async def run_quality_gates(backend: Any, changed_paths: Sequence[str]) -> GateF
                 command=gate.command,
                 exit_code=exit_code,
                 kind=_classify_failure(exit_code, output),
-                output_tail=output[-_OUTPUT_TAIL_CHARS:],
+                output_tail=output[-OUTPUT_TAIL_CHARS:],
             )
     return None
 
@@ -311,8 +314,8 @@ async def _changed_paths(backend: Any, base: str, head: str = "HEAD") -> list[st
     """
     for ref in (f"origin/{base}", base):
         response = await backend.aexecute(
-            f"cd {_WORKSPACE} && git diff --name-only {shlex.quote(ref)}...{shlex.quote(head)}",
-            timeout=_DIFF_TIMEOUT_SECONDS,
+            f"cd {WORKSPACE} && git diff --name-only {shlex.quote(ref)}...{shlex.quote(head)}",
+            timeout=DIFF_TIMEOUT_SECONDS,
         )
         if getattr(response, "exit_code", None) == 0:
             return [line.strip() for line in response.output.splitlines() if line.strip()]
