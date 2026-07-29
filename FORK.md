@@ -347,6 +347,20 @@ Backend must be LIVE (above); then:
 cd ui && pnpm install && pnpm dev     # http://localhost:3000 (Vite, port in ui/package.json)
 ```
 
+Local-dev env the login flow needs (INSTALLATION.md §8; all bit us on first
+login — the sample env ships them empty):
+
+- `ui/.env`: `VITE_DASHBOARD_API_BASE_URL="http://localhost:2024"` — without
+  it the login button navigates to :3000 and 404s in the SPA.
+- `.env`: `DASHBOARD_ALLOWED_ORIGINS="http://localhost:3000"` (CORS is off
+  when empty), `DASHBOARD_BASE_URL="http://localhost:3000"`, and a real
+  `DASHBOARD_JWT_SECRET` (`openssl rand -hex 32`) — the sample line
+  `DASHBOARD_JWT_SECRET="" # Generate with: ...` is an *empty* value with an
+  inline comment; auth/login 500s until it is replaced.
+
+Restart both (`speedbay/openswe stop && start`; re-run `pnpm dev`) after
+changing either env file.
+
 Login is the direct GitHub OAuth (`GITHUB_APP_CLIENT_ID/SECRET`), gated by
 `ALLOWED_GITHUB_ORGS="speedbay"` — non-org accounts are rejected server-side,
 fail-closed (`tests/dashboard/test_dashboard_org_login_gate.py`,
