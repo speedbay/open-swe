@@ -37,4 +37,8 @@ echo "gh shim      : $(command -v gh)"
 echo "git config   : $GIT_CONFIG_GLOBAL"
 echo "git hooks    : $GIT_CONFIG_VALUE_0"
 
-exec "$ROOT/.venv/bin/langgraph" dev --no-browser "$@"
+# --no-reload: langgraph dev's file watcher sees the runtime's own
+# .langgraph_api/*.pckl persistence flushes (~every 10s), hot-reloads itself
+# in a loop, and eventually dies mid-reload. This is an operational server,
+# not active development — restart via speedbay/openswe after code changes.
+exec "$ROOT/.venv/bin/langgraph" dev --no-browser --no-reload "$@"
