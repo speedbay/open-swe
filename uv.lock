@@ -2041,6 +2041,7 @@ name = "open-swe-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "attrs" },
     { name = "cryptography" },
     { name = "deepagents" },
     { name = "exa-py" },
@@ -2078,6 +2079,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "attrs", specifier = ">=26.1.0" },
     { name = "cryptography", specifier = ">=49.0.0" },
     { name = "deepagents", specifier = "==0.7.0b2" },
     { name = "exa-py", specifier = ">=2.16.0" },

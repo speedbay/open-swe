@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from attrs import frozen
 from langchain_core.messages import ToolMessage
 
 from agent.speedbay import quality_gates as qg
@@ -27,7 +27,7 @@ from agent.speedbay.quality_gates import (
 )
 
 
-@dataclass
+@frozen
 class FakeResponse:
     output: str = ""
     exit_code: int | None = 0
@@ -52,11 +52,15 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _request(tool: str = "open_pull_request", base: str = "main") -> Any:
+def _request(tool: str = "open_pull_request", base: str = "main", head: str = "") -> Any:
     """Duck-typed ToolCallRequest double (typed Any for the middleware calls)."""
 
+    args: dict[str, str] = {"base": base}
+    if head:
+        args["head"] = head
+
     class Request:
-        tool_call = {"name": tool, "args": {"base": base}, "id": "call-1"}
+        tool_call = {"name": tool, "args": args, "id": "call-1"}
 
     return Request()
 
@@ -85,6 +89,30 @@ def test_touched_projects_maps_paths_to_configured_roots(demo_gates) -> None:
     assert result == {"demo": ["app/x.py", "README.md"]}
 
 
+def test_every_configured_project_gate_fires() -> None:
+    """Each real project's every gate dispatches when its paths are touched.
+
+    Guards the real ``PROJECT_QUALITY_GATES`` map (the other tests swap in a
+    demo map): selection indexes only configured roots — no KeyError is
+    possible for unknown projects — and every configured gate, including
+    path-filtered ones, is actually issued to the sandbox.
+    """
+    for project, gates in qg.PROJECT_QUALITY_GATES.items():
+        backend = FakeBackend()
+        # One generic path plus one match per path-filtered gate.
+        paths = [f"{project}/x"] + [
+            f"{project}/{gate.paths[0].replace('**', 'x')}" for gate in gates if gate.paths
+        ]
+        assert set(touched_projects(paths)) == {project}
+        assert _run(run_quality_gates(backend, paths)) is None
+        for gate in gates:
+            assert gate.name and gate.command
+            assert any(gate.command in issued for issued in backend.commands), (
+                project,
+                gate.name,
+            )
+
+
 # --- gate runner ------------------------------------------------------------
 
 
@@ -93,8 +121,8 @@ def test_commands_run_from_project_root_and_pass(demo_gates) -> None:
     failure = _run(run_quality_gates(backend, ["demo/app/main.py"]))
     assert failure is None
     assert backend.commands == [
-        "cd /workspace/demo && run-lint",
-        "cd /workspace/demo && run-scoped",
+        "cd /workspace/demo && set -o pipefail && ( run-lint ) 2>&1 | tail -c 2000",
+        "cd /workspace/demo && set -o pipefail && ( run-scoped ) 2>&1 | tail -c 2000",
     ]
 
 
@@ -102,7 +130,9 @@ def test_path_filtered_gate_skipped_when_no_match(demo_gates) -> None:
     backend = FakeBackend()
     failure = _run(run_quality_gates(backend, ["demo/docs/readme.md"]))
     assert failure is None
-    assert backend.commands == ["cd /workspace/demo && run-lint"]
+    assert backend.commands == [
+        "cd /workspace/demo && set -o pipefail && ( run-lint ) 2>&1 | tail -c 2000"
+    ]
 
 
 def test_failing_command_blocks_with_name_and_bounded_tail(demo_gates) -> None:
@@ -115,7 +145,9 @@ def test_failing_command_blocks_with_name_and_bounded_tail(demo_gates) -> None:
     assert failure.output_tail.endswith("TAIL-MARKER")
     assert len(failure.output_tail) == qg._OUTPUT_TAIL_CHARS
     # first failure stops the run — the scoped command never executed
-    assert backend.commands == ["cd /workspace/demo && run-lint"]
+    assert len(backend.commands) == 1 and "run-lint" in backend.commands[0]
+    # the true tail is captured command-side, before backend head-truncation
+    assert backend.commands[0].endswith(f"| tail -c {qg._OUTPUT_TAIL_CHARS}")
 
 
 def test_precondition_failure_distinguished_by_exit_127(demo_gates) -> None:
@@ -200,6 +232,19 @@ def test_middleware_passes_pr_when_gates_green(demo_gates, monkeypatch) -> None:
         return "pr-opened"
 
     assert _run(QualityGatesMiddleware().awrap_tool_call(_request(), handler)) == "pr-opened"
+
+
+def test_middleware_diffs_requested_head_branch(demo_gates, monkeypatch) -> None:
+    """The gate diffs the requested PR head ref, not the sandbox's HEAD."""
+    backend = FakeBackend({"git diff --name-only": FakeResponse(output="")})
+    _wire(monkeypatch, backend)
+
+    async def handler(request: Any) -> Any:
+        return "pr-opened"
+
+    request = _request(head="speedbay:feature-x")
+    assert _run(QualityGatesMiddleware().awrap_tool_call(request, handler)) == "pr-opened"
+    assert backend.commands[0].endswith("git diff --name-only origin/main...feature-x")
 
 
 def test_middleware_fails_open_when_diff_unavailable(demo_gates, monkeypatch, caplog) -> None:

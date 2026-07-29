@@ -26,9 +26,9 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any
 
+from attrs import frozen
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from langchain_core.messages import ToolMessage
 from langgraph.config import get_config
@@ -53,7 +53,7 @@ _PRECONDITION_MARKERS = (
 )
 
 
-@dataclass(frozen=True)
+@frozen
 class GateCommand:
     """One CI-equivalent validation command for a project.
 
@@ -70,19 +70,6 @@ class GateCommand:
 # (copied 2026-07-28). Keys are warehouse monorepo root directories — the first
 # path segment of a changed file selects the project.
 PROJECT_QUALITY_GATES: dict[str, tuple[GateCommand, ...]] = {
-    # workflow.md `projects.pi-forge.quality_gates`
-    "pi-forge": (
-        GateCommand(
-            "install forge workspace dependencies",
-            "cd forge && npm ci --workspaces --include-workspace-root",
-        ),
-        GateCommand("forge extensions test suite", "cd forge && npm run test:extensions"),
-        GateCommand("forge skills test suite", "cd forge && npm run test:skills"),
-        GateCommand("forge lib test suite", "cd forge && npm run test:lib"),
-        GateCommand("github tool unit tests", "cd forge/tools/github && npm ci && npm test"),
-        GateCommand("linear tool unit tests", "cd forge/tools/linear && npm ci && npm test"),
-        GateCommand("memory tool unit tests", "cd forge/tools/memory && npm ci && npm test"),
-    ),
     # workflow.md `projects.docdock.quality_gates`
     "docdock": (
         GateCommand("install backend dependencies", "cd backend && uv sync --locked --all-groups"),
@@ -196,7 +183,7 @@ PROJECT_QUALITY_GATES: dict[str, tuple[GateCommand, ...]] = {
 }
 
 
-@dataclass(frozen=True)
+@frozen
 class GateFailure:
     """Evidence for one failed quality-gate command.
 
@@ -287,7 +274,14 @@ async def run_quality_gates(backend: Any, changed_paths: Sequence[str]) -> GateF
         for gate in PROJECT_QUALITY_GATES[project]:
             if gate.paths and not any(_matches_any(p, gate.paths) for p in rel_paths):
                 continue
-            full = f"cd {_WORKSPACE}/{project} && {gate.command}"
+            # Capture the command's true tail command-side: the sandbox backend
+            # truncates long output by keeping the head, which would drop the
+            # final error lines the agent needs. `tail -c` bounds output before
+            # the backend ever sees it; pipefail preserves the exit code.
+            full = (
+                f"cd {_WORKSPACE}/{project} && set -o pipefail && "
+                f"( {gate.command} ) 2>&1 | tail -c {_OUTPUT_TAIL_CHARS}"
+            )
             response = await backend.aexecute(full, timeout=_COMMAND_TIMEOUT_SECONDS)
             exit_code = getattr(response, "exit_code", None)
             output = getattr(response, "output", "") or ""
@@ -304,15 +298,17 @@ async def run_quality_gates(backend: Any, changed_paths: Sequence[str]) -> GateF
     return None
 
 
-async def _changed_paths(backend: Any, base: str) -> list[str] | None:
-    """Changed file paths of the sandbox worktree vs the PR base, or None.
+async def _changed_paths(backend: Any, base: str, head: str = "HEAD") -> list[str] | None:
+    """Changed file paths of the requested PR head vs the PR base, or None.
 
-    Tries ``origin/<base>`` first (the push target), then ``<base>``; None
-    means the diff could not be computed (fail-open at the caller).
+    Diffs the requested ``head`` ref (not the sandbox's current checkout,
+    which may have moved after the push). Tries ``origin/<base>`` first (the
+    push target), then ``<base>``; None means the diff could not be computed
+    (fail-open at the caller).
     """
     for ref in (f"origin/{base}", base):
         response = await backend.aexecute(
-            f"cd {_WORKSPACE} && git diff --name-only {ref}...HEAD",
+            f"cd {_WORKSPACE} && git diff --name-only {ref}...{head}",
             timeout=_DIFF_TIMEOUT_SECONDS,
         )
         if getattr(response, "exit_code", None) == 0:
@@ -408,16 +404,21 @@ class QualityGatesMiddleware(AgentMiddleware):
 
     async def _blocking_message(self, request: ToolCallRequest) -> ToolMessage | None:
         try:
-            base = _tool_args(request).get("base")
+            args = _tool_args(request)
+            base = args.get("base")
             if not isinstance(base, str) or not base:
                 base = "main"
+            head = args.get("head")
+            # `head` may be "owner:branch"; the sandbox only knows the branch.
+            head = head.rpartition(":")[2] if isinstance(head, str) and head else ""
+            head = head or "HEAD"
             configurable = get_config().get("configurable", {})
             thread_id = configurable.get("thread_id")
             if not thread_id:
                 logger.warning("quality gates: no thread_id in run config — passing")
                 return None
             backend = await get_sandbox_backend(str(thread_id))
-            changed = await _changed_paths(backend, base)
+            changed = await _changed_paths(backend, base, head)
             if changed is None:
                 logger.warning("quality gates: could not diff against base %r — passing", base)
                 return None
