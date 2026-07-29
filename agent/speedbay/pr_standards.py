@@ -37,12 +37,19 @@ from ..middleware.pr_creation_guard import is_pr_creation_fallback_command
 from ..utils.sandbox_state import get_sandbox_backend
 from .forge_rules.atomicity import check_atomicity, parse_numstat
 from .forge_rules.hygiene import check_attribution, check_hygiene
-from .quality_gates import _tool_args, _tool_call_id, _tool_name
+
+# Shared org-layer settings and tool-call helpers: quality_gates (OPE-9) owns
+# the sandbox workspace root and diff timeout; both gates must agree on them.
+from .quality_gates import (
+    _DIFF_TIMEOUT_SECONDS,
+    _WORKSPACE,
+    _tool_args,
+    _tool_call_id,
+    _tool_name,
+)
 
 logger = logging.getLogger(__name__)
 
-_WORKSPACE = "/workspace"
-_DIFF_TIMEOUT_SECONDS = 120
 _MAX_CORRECTIVE_ROUNDS = 3
 
 _FALLBACK_ERROR = (

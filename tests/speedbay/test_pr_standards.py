@@ -14,8 +14,8 @@ import asyncio
 import json
 from typing import Any
 
+import attrs
 import pytest
-from attrs import frozen
 from langchain_core.messages import ToolMessage
 
 from agent.speedbay import pr_standards as fg
@@ -25,7 +25,7 @@ ISSUE = "OPE-8"
 BRANCH = "ope-8-forge-gates"
 
 
-@frozen
+@attrs.define(frozen=True)
 class FakeResponse:
     output: str = ""
     exit_code: int | None = 0
