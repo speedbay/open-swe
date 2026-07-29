@@ -160,7 +160,7 @@ Everything we add lives in files upstream does not own:
 | `speedbay/set_model.py` | Reads/sets the agent's default model (no dashboard needed) |
 | `speedbay/create_linear_webhook.py` | Creates/lists the Linear trigger webhooks (needs a temp admin key) |
 | `speedbay/docker/Dockerfile.sandbox` | The sandbox image (`openswe-sandbox:dev`) the docker backend boots |
-| `agent/speedbay/` | **All Speed Bay agent modules**: `conventions.py` (commit/PR contract middleware), `linear_guard.py` (OPE-23 self-trigger guard), `docker_sandbox.py` (OPE-7 docker backend), `quality_gates.py` (OPE-9 pre-PR quality gates; commands ported from warehouse workflow.md — re-sync on change), `pr_standards.py` (OPE-8 atomicity-cap + commit-hygiene gate on `open_pull_request`, incl. shell-fallback interception), `forge_rules/` (OPE-14 atomicity-cap + commit-hygiene rules as pure functions; consumed by `pr_standards.py`) |
+| `agent/speedbay/` | **All Speed Bay agent modules**: `conventions.py` (commit/PR contract middleware), `linear_guard.py` (OPE-23 self-trigger guard), `docker_sandbox.py` (OPE-7 docker backend), `quality_gates.py` (OPE-9 pre-PR quality gates; commands ported from warehouse workflow.md — re-sync on change), `pr_standards.py` (OPE-8 atomicity-cap + commit-hygiene gate on `open_pull_request`, incl. shell-fallback interception), `rules/` (OPE-14 atomicity-cap + commit-hygiene rules as pure functions; consumed by `pr_standards.py`) |
 | `tests/speedbay/` | **All Speed Bay tests** + fixtures: conventions, linear guard, docker sandbox (incl. the negative isolation proof; self-skips without a docker daemon/image/App key) |
 | `.macroscope/` | Macroscope review config (OPE-26): blocking agent-hygiene CRA, org-layer Python correctness idioms, review-scope ignore file — see below |
 | `.github/workflows/speedbay-ci.yml` | Org-layer CI: ruff + pytest over Speed Bay code only — see below |
@@ -298,7 +298,7 @@ night to learn:
   from `.env`. A UI-created webhook's generated secret never verified against
   our HMAC check; the API-created webhook with our own secret verified
   immediately.
-- **Only workspace admins can manage webhooks.** The forge-bot runtime key gets
+- **Only workspace admins can manage webhooks.** The swe-service-bot runtime key gets
   `Invalid role: admin required`. Use a temporary admin key
   (`LINEAR_ADMIN_KEY` env var), then revoke it. Never store it.
 - **`allPublicTeams: true` does not cover private teams.** Each private Linear
@@ -308,16 +308,16 @@ night to learn:
   needs its own webhook — run the script again.
 - **API-authored comments do fire the webhook**, and arrive with
   `botActor: null` — the route's bot filter does not catch comments posted with
-  a plain API key (e.g. forge-bot). Since OPE-23 a deterministic guard closes
+  a plain API key (e.g. swe-service-bot). Since OPE-23 a deterministic guard closes
   this: the route drops any comment authored by the runtime `LINEAR_API_KEY`'s
   own user id (`agent/speedbay/linear_guard.py`; fail-open on Linear
   outages so humans are never blocked, retried per delivery). Consequence for
-  testing: forge-bot comments can no longer trigger runs — use a personal
+  testing: swe-service-bot comments can no longer trigger runs — use a personal
   account or the synthetic-delivery scripts. The conventions middleware also
   instructs the agent never to write `@openswe` in Linear comments
   (belt-and-braces).
-- The runtime `LINEAR_API_KEY` is a forge-bot service-account key: agent
-  comments on tickets are attributed to `forge-bot@speedbay.com`, and the key
+- The runtime `LINEAR_API_KEY` is a swe-service-bot service-account key: agent
+  comments on tickets are attributed to `swe-service-bot@speedbay.com`, and the key
   is revocable without touching anyone's personal access.
 - **Sandbox runs can mutate `speedbay/gitconfig`**: an agent once ran
   `gh auth setup-git`, which rewrote the credential helper in the file

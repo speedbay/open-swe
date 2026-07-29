@@ -8,9 +8,9 @@ consumes this module; this package deliberately contains no wiring.
 Rule sources (values copied with provenance comments; the fork never reads
 warehouse files at runtime):
 
-* ``atomicity``  — warehouse ``pi-forge/forge/references/atomicity/RULES.md``
-  and ``pi-forge/forge/extensions/atomicity-guardrails.ts``.
-* ``hygiene``    — warehouse ``pi-forge/forge/tools/pre-commit-hooks/
+* ``atomicity``  — the warehouse harness's ``references/atomicity/RULES.md``
+  and ``extensions/atomicity-guardrails.ts`` (harness paths as of the fork).
+* ``hygiene``    — the warehouse harness's ``tools/pre-commit-hooks/
   hygiene-sections.mjs`` (``validateHygieneSections``, translated verbatim)
   plus the PR-observable rules in ``.macroscope/check-run-agents/
   agent-hygiene.md`` (the live blocking CRA). The prompt-side contract in

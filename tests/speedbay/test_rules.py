@@ -1,18 +1,18 @@
-"""Tests for the forge_rules pure functions (OPE-14).
+"""Tests for the ``rules`` pure functions (OPE-14).
 
 Fixture set mirrors the source implementations: cap math and classification
-against ``pi-forge/forge/references/atomicity/RULES.md`` § 2, and the body
+against the warehouse harness's ``references/atomicity/RULES.md`` § 2, and the body
 contract against ``validateHygieneSections`` (hygiene-sections.mjs) — one
 passing and one failing case per rule, each failure naming its rule.
 
-Run:  .venv/bin/python -m pytest tests/speedbay/test_forge_rules.py -q
+Run:  .venv/bin/python -m pytest tests/speedbay/test_rules.py -q
 """
 
 from __future__ import annotations
 
 import pytest
 
-from agent.speedbay.forge_rules.atomicity import (
+from agent.speedbay.rules.atomicity import (
     TRACK_A_EFFECTIVE_LOC_CAP,
     TRACK_A_PRODUCTION_FILE_CAP,
     NumstatRow,
@@ -20,7 +20,7 @@ from agent.speedbay.forge_rules.atomicity import (
     classify_path,
     parse_numstat,
 )
-from agent.speedbay.forge_rules.hygiene import (
+from agent.speedbay.rules.hygiene import (
     Violation,
     check_attribution,
     check_body_sections,
@@ -59,7 +59,7 @@ def _body(**overrides: str) -> str:
 def test_classify_path_categories() -> None:
     assert classify_path("agent/speedbay/pr_standards.py") == "production"
     assert classify_path("pyproject.toml") == "production"  # ambiguous -> conservative
-    assert classify_path("tests/speedbay/test_forge_rules.py") == "test"
+    assert classify_path("tests/speedbay/test_rules.py") == "test"
     assert classify_path("ui/src/__tests__/app.test.ts") == "test"
     assert classify_path("backend/util_test.py") == "test"
     assert classify_path("FORK.md") == "documentation"
@@ -156,9 +156,9 @@ def test_title_pass_and_fail() -> None:
 
 
 def test_branch_pass_and_fail() -> None:
-    assert check_branch("ope-14-forge-rules", ISSUE) is None
-    assert _rule(check_branch("feature/forge-rules", ISSUE)) == "branch-name"
-    assert _rule(check_branch("OPE-14-forge-rules", ISSUE)) == "branch-name"  # must be lowercase
+    assert check_branch("ope-14-port-rules", ISSUE) is None
+    assert _rule(check_branch("feature/port-rules", ISSUE)) == "branch-name"
+    assert _rule(check_branch("OPE-14-port-rules", ISSUE)) == "branch-name"  # must be lowercase
 
 
 def test_attribution_flags_claims_not_product_names() -> None:
@@ -232,4 +232,4 @@ def test_check_hygiene_collects_named_violations() -> None:
         "branch-name",
         "closes-line",
     }
-    assert check_hygiene("OPE-14: port rules", _body(), "ope-14-forge-rules", ISSUE) == ()
+    assert check_hygiene("OPE-14: port rules", _body(), "ope-14-port-rules", ISSUE) == ()

@@ -5,7 +5,8 @@
 # agent needs (git, gh, language runtimes) — credentials are NOT baked in; the
 # backend injects a short-lived installation token at container create.
 #
-# Requirements mined from pi-forge/forge/docker/Dockerfile (sandcastle):
+# Requirements mined from the warehouse harness's sandbox Dockerfile
+# (sandcastle; harness path as of the fork):
 # git + git-lfs + gh + uv + node. Pi itself is not installed — Open SWE is the
 # agent here, not pi.
 #

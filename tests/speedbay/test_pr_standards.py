@@ -1,7 +1,7 @@
-"""Tests for the forge gate middleware (OPE-8).
+"""Tests for the PR-standards gate middleware (OPE-8).
 
 Unit tests drive the middleware through fake backends/requests (rule math is
-tested in OPE-14's test_forge_rules.py); one docker-gated integration test
+tested in OPE-14's test_rules.py); one docker-gated integration test
 seeds an oversized and a compliant change through the real docker backend and
 self-skips where docker or the sandbox image is unavailable.
 
@@ -22,7 +22,7 @@ from agent.speedbay import pr_standards as fg
 from agent.speedbay.pr_standards import PRStandardsMiddleware
 
 ISSUE = "OPE-8"
-BRANCH = "ope-8-forge-gates"
+BRANCH = "ope-8-pr-standards"
 
 
 @attrs.define(frozen=True)

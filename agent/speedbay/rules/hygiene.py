@@ -1,12 +1,12 @@
 """Commit/PR hygiene rules as pure functions (OPE-14).
 
-The body contract is a verbatim translation of warehouse
-``pi-forge/forge/tools/pre-commit-hooks/hygiene-sections.mjs``
+The body contract is a verbatim translation of the warehouse harness's
+``tools/pre-commit-hooks/hygiene-sections.mjs`` (harness path as of the fork)
 (``validateHygieneSections`` and its three regexes) — same checks, same order,
 same messages — so this fork and warehouse cannot drift into disagreeing about
 what is compliant. Title, branch-name, and AI-attribution rules port the
 PR-observable rules from ``.macroscope/check-run-agents/agent-hygiene.md``
-(the live blocking CRA) and warehouse ``COMMIT-HYGIENE.md``.
+(the live blocking CRA) and the warehouse harness's ``COMMIT-HYGIENE.md``.
 
 Strings in, verdict values out. No git, no I/O.
 """
