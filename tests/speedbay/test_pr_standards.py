@@ -5,7 +5,7 @@ tested in OPE-14's test_forge_rules.py); one docker-gated integration test
 seeds an oversized and a compliant change through the real docker backend and
 self-skips where docker or the sandbox image is unavailable.
 
-Run:  .venv/bin/python -m pytest tests/speedbay/test_forge_gates.py -x -q
+Run:  .venv/bin/python -m pytest tests/speedbay/test_pr_standards.py -x -q
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ import pytest
 from attrs import frozen
 from langchain_core.messages import ToolMessage
 
-from agent.speedbay import forge_gates as fg
-from agent.speedbay.forge_gates import ForgeGatesMiddleware
+from agent.speedbay import pr_standards as fg
+from agent.speedbay.pr_standards import PRStandardsMiddleware
 
 ISSUE = "OPE-8"
 BRANCH = "ope-8-forge-gates"
@@ -131,20 +131,20 @@ def _payload(result: Any) -> dict[str, Any]:
     ],
 )
 def test_shell_fallback_blocked_on_both_paths(command: str) -> None:
-    middleware = ForgeGatesMiddleware()
+    middleware = PRStandardsMiddleware()
     request = _request(tool="execute", command=command)
 
     sync_result = middleware.wrap_tool_call(request, _sync_handler)
     payload = _payload(sync_result)
-    assert payload["code"] == "forge_gate_pr_fallback_blocked"
+    assert payload["code"] == "pr_standards_fallback_blocked"
     assert payload["blocked_command"] == command
 
     async_result = _run(middleware.awrap_tool_call(request, _fail_handler))
-    assert _payload(async_result)["code"] == "forge_gate_pr_fallback_blocked"
+    assert _payload(async_result)["code"] == "pr_standards_fallback_blocked"
 
 
 def test_ordinary_execute_and_other_tools_pass_through() -> None:
-    middleware = ForgeGatesMiddleware()
+    middleware = PRStandardsMiddleware()
     request = _request(tool="execute", command="git push origin main")
     sync_result = middleware.wrap_tool_call(request, _sync_handler)
     assert isinstance(sync_result, ToolMessage) and sync_result.content == "handled"
@@ -157,15 +157,15 @@ def test_ordinary_execute_and_other_tools_pass_through() -> None:
 def test_compliant_diff_and_hygiene_open_normally(monkeypatch) -> None:
     backend = _numstat("10\t2\tagent/api.py\n40\t0\ttests/test_api.py\n")
     _wire(monkeypatch, backend)
-    result = _run(ForgeGatesMiddleware().awrap_tool_call(_request(), _pass_handler))
+    result = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _pass_handler))
     assert result == "pr-opened"
     assert backend.commands[0].endswith(f"git diff --numstat origin/main...{BRANCH}")
 
 
 def test_oversized_diff_blocked_with_cap_and_split_instruction(monkeypatch) -> None:
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
-    payload = _payload(_run(ForgeGatesMiddleware().awrap_tool_call(_request(), _fail_handler)))
-    assert payload["code"] == "forge_gate_failed"
+    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler)))
+    assert payload["code"] == "pr_standards_failed"
     assert payload["recoverable_by_agent"] is True
     assert "effective LOC 400 exceeds the Track-A cap of 300" in payload["atomicity"]["exceeded"][0]
     assert "Split the change" in payload["error"]
@@ -175,7 +175,7 @@ def test_oversized_diff_blocked_with_cap_and_split_instruction(monkeypatch) -> N
 def test_hygiene_violations_blocked_with_rule_names(monkeypatch) -> None:
     _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"))
     request = _request(title="update stuff", body=_body() + "\nMade by [Open SWE]\n")
-    payload = _payload(_run(ForgeGatesMiddleware().awrap_tool_call(request, _fail_handler)))
+    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
     rules = {v["rule"] for v in payload["hygiene_violations"]}
     assert {"title-format", "ai-attribution"} <= rules
     assert "[title-format]" in payload["error"]
@@ -186,7 +186,7 @@ def test_truncated_numstat_blocks_as_oversized(monkeypatch) -> None:
         {"git diff --numstat": FakeResponse(output="1\t0\tagent/api.py\n", truncated=True)}
     )
     _wire(monkeypatch, backend)
-    payload = _payload(_run(ForgeGatesMiddleware().awrap_tool_call(_request(), _fail_handler)))
+    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler)))
     assert any("truncated" in reason for reason in payload["atomicity"]["exceeded"])
 
 
@@ -194,16 +194,16 @@ def test_no_linear_issue_runs_attribution_check_only(monkeypatch) -> None:
     _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"), issue=None)
     # Bad title passes without an expected issue id...
     request = _request(title="update stuff")
-    assert _run(ForgeGatesMiddleware().awrap_tool_call(request, _pass_handler)) == "pr-opened"
+    assert _run(PRStandardsMiddleware().awrap_tool_call(request, _pass_handler)) == "pr-opened"
     # ...but AI attribution still blocks.
     request = _request(title="update stuff", body="Made by [Open SWE]")
-    payload = _payload(_run(ForgeGatesMiddleware().awrap_tool_call(request, _fail_handler)))
+    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
     assert [v["rule"] for v in payload["hygiene_violations"]] == ["ai-attribution"]
 
 
 def test_corrective_rounds_bounded_then_escalates(monkeypatch) -> None:
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
-    middleware = ForgeGatesMiddleware()
+    middleware = PRStandardsMiddleware()
     for expected_round in (1, 2):
         payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
         assert payload["corrective_round"] == expected_round
@@ -216,7 +216,7 @@ def test_corrective_rounds_bounded_then_escalates(monkeypatch) -> None:
 
 
 def test_passing_gate_resets_the_round_counter(monkeypatch) -> None:
-    middleware = ForgeGatesMiddleware()
+    middleware = PRStandardsMiddleware()
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
     _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
     _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"))
@@ -232,7 +232,7 @@ def test_fails_open_when_diff_unavailable(monkeypatch, caplog) -> None:
     )
     _wire(monkeypatch, backend)
     with caplog.at_level("WARNING"):
-        result = _run(ForgeGatesMiddleware().awrap_tool_call(_request(), _pass_handler))
+        result = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _pass_handler))
     assert result == "pr-opened"
     assert "could not diff" in caplog.text
 
@@ -244,7 +244,7 @@ def test_fails_open_on_infrastructure_error(monkeypatch, caplog) -> None:
     monkeypatch.setattr(fg, "get_sandbox_backend", broken_get_backend)
     monkeypatch.setattr(fg, "get_config", lambda: {"configurable": {"thread_id": "t-1"}})
     with caplog.at_level("ERROR"):
-        result = _run(ForgeGatesMiddleware().awrap_tool_call(_request(), _pass_handler))
+        result = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _pass_handler))
     assert result == "pr-opened"
     assert "gate infrastructure error" in caplog.text
 
@@ -291,8 +291,8 @@ def test_integration_oversized_blocks_and_compliant_passes(monkeypatch) -> None:
             lambda: {"configurable": {"thread_id": "t-1", "linear_issue": {"identifier": ISSUE}}},
         )
 
-        blocked = _run(ForgeGatesMiddleware().awrap_tool_call(_request(), _fail_handler))
-        assert _payload(blocked)["code"] == "forge_gate_failed"
+        blocked = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler))
+        assert _payload(blocked)["code"] == "pr_standards_failed"
 
         _run(
             sandbox.aexecute(
@@ -301,7 +301,7 @@ def test_integration_oversized_blocks_and_compliant_passes(monkeypatch) -> None:
             )
         )
         result = _run(
-            ForgeGatesMiddleware().awrap_tool_call(_request(head="ope-8-small"), _pass_handler)
+            PRStandardsMiddleware().awrap_tool_call(_request(head="ope-8-small"), _pass_handler)
         )
         assert result == "pr-opened"
     finally:

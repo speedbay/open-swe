@@ -47,7 +47,7 @@ _MAX_CORRECTIVE_ROUNDS = 3
 
 _FALLBACK_ERROR = (
     "New pull requests must be opened with the open_pull_request tool so the "
-    "forge gates (atomicity caps, commit hygiene) run before the PR exists. "
+    "PR standards gate (atomicity caps, commit hygiene) run before the PR exists. "
     "Do not fall back to gh pr create, gh api, or curl."
 )
 
@@ -77,7 +77,7 @@ def _issue_id(configurable: dict[str, Any]) -> str | None:
     return identifier if isinstance(identifier, str) and identifier.strip() else None
 
 
-class ForgeGatesMiddleware(AgentMiddleware):
+class PRStandardsMiddleware(AgentMiddleware):
     """Block non-compliant ``open_pull_request`` calls and shell PR fallbacks."""
 
     state_schema = AgentState
@@ -96,8 +96,8 @@ class ForgeGatesMiddleware(AgentMiddleware):
             return None
         content = {
             "status": "error",
-            "error_type": "ForgeGateFallbackBlocked",
-            "code": "forge_gate_pr_fallback_blocked",
+            "error_type": "PRStandardsFallbackBlocked",
+            "code": "pr_standards_fallback_blocked",
             "recoverable_by_agent": False,
             "error": _FALLBACK_ERROR,
             "blocked_command": command,
@@ -145,12 +145,12 @@ class ForgeGatesMiddleware(AgentMiddleware):
             configurable = get_config().get("configurable", {})
             thread_id = configurable.get("thread_id")
             if not thread_id:
-                logger.warning("forge gates: no thread_id in run config — passing")
+                logger.warning("PR standards gate: no thread_id in run config — passing")
                 return None
             backend = await get_sandbox_backend(str(thread_id))
             diff = await _numstat(backend, base, branch)
             if diff is None:
-                logger.warning("forge gates: could not diff against base %r — passing", base)
+                logger.warning("PR standards gate: could not diff against base %r — passing", base)
                 return None
             numstat, truncated = diff
             verdict = check_atomicity(parse_numstat(numstat))
@@ -171,13 +171,13 @@ class ForgeGatesMiddleware(AgentMiddleware):
             else:
                 # Non-Linear run: issue-anchored rules (title format, branch,
                 # Closes line) have no expected id; attribution still applies.
-                logger.info("forge gates: no linear issue in config — attribution check only")
+                logger.info("PR standards gate: no linear issue in config — attribution check only")
                 attribution = check_attribution(f"{title}\n{body}")
                 violations = (attribution,) if attribution is not None else ()
         except Exception:
             # Infrastructure fault in the gate itself must not permanently
             # block PR creation — log loudly and fail open (OPE-9 precedent).
-            logger.exception("forge gates: gate infrastructure error — passing")
+            logger.exception("PR standards gate: gate infrastructure error — passing")
             return None
 
         if verdict.passed and not violations:
@@ -206,15 +206,15 @@ class ForgeGatesMiddleware(AgentMiddleware):
                 "retrying and surface the gate failure to a human for approval."
             )
         logger.info(
-            "forge gates: blocking open_pull_request (round %d) — atomicity=%s hygiene=%s",
+            "PR standards gate: blocking open_pull_request (round %d) — atomicity=%s hygiene=%s",
             rounds,
             verdict.exceeded,
             [v.rule for v in violations],
         )
         content = {
             "status": "error",
-            "error_type": "ForgeGateFailed",
-            "code": "forge_gate_failed",
+            "error_type": "PRStandardsFailed",
+            "code": "pr_standards_failed",
             "recoverable_by_agent": not escalate,
             "error": " ".join(advice),
             "atomicity": {

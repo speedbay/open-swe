@@ -26,7 +26,7 @@ all survived, and re-add any a merge dropped (each is marked in-code with a
 | # | Registration | Location |
 |---|---|---|
 | 1 | `"docker"` entry for the Docker sandbox backend | the `SANDBOX_FACTORIES` dict in `agent/utils/sandbox.py` |
-| 2 | `SpeedbayConventionsMiddleware`, `ForgeGatesMiddleware`, and `QualityGatesMiddleware` in the `middleware=[...]` list | the list inside `get_agent()` in `agent/server.py`, plus their direct imports above |
+| 2 | `SpeedbayConventionsMiddleware`, `PRStandardsMiddleware`, and `QualityGatesMiddleware` in the `middleware=[...]` list | the list inside `get_agent()` in `agent/server.py`, plus their direct imports above |
 | 3 | `docker` branch calling `validate_startup_config()` | inside `validate_sandbox_startup_config()` in `agent/utils/sandbox.py` |
 
 Identified by symbol, not `file:line` — the middleware list moved from :946 to :953 on the very first upstream merge.
@@ -160,7 +160,7 @@ Everything we add lives in files upstream does not own:
 | `speedbay/set_model.py` | Reads/sets the agent's default model (no dashboard needed) |
 | `speedbay/create_linear_webhook.py` | Creates/lists the Linear trigger webhooks (needs a temp admin key) |
 | `speedbay/docker/Dockerfile.sandbox` | The sandbox image (`openswe-sandbox:dev`) the docker backend boots |
-| `agent/speedbay/` | **All Speed Bay agent modules**: `conventions.py` (commit/PR contract middleware), `linear_guard.py` (OPE-23 self-trigger guard), `docker_sandbox.py` (OPE-7 docker backend), `quality_gates.py` (OPE-9 pre-PR quality gates; commands ported from warehouse workflow.md — re-sync on change), `forge_gates.py` (OPE-8 atomicity-cap + commit-hygiene gate on `open_pull_request`, incl. shell-fallback interception), `forge_rules/` (OPE-14 atomicity-cap + commit-hygiene rules as pure functions; consumed by `forge_gates.py`) |
+| `agent/speedbay/` | **All Speed Bay agent modules**: `conventions.py` (commit/PR contract middleware), `linear_guard.py` (OPE-23 self-trigger guard), `docker_sandbox.py` (OPE-7 docker backend), `quality_gates.py` (OPE-9 pre-PR quality gates; commands ported from warehouse workflow.md — re-sync on change), `pr_standards.py` (OPE-8 atomicity-cap + commit-hygiene gate on `open_pull_request`, incl. shell-fallback interception), `forge_rules/` (OPE-14 atomicity-cap + commit-hygiene rules as pure functions; consumed by `pr_standards.py`) |
 | `tests/speedbay/` | **All Speed Bay tests** + fixtures: conventions, linear guard, docker sandbox (incl. the negative isolation proof; self-skips without a docker daemon/image/App key) |
 | `.macroscope/` | Macroscope review config (OPE-26): blocking agent-hygiene CRA, org-layer Python correctness idioms, review-scope ignore file — see below |
 | `.github/workflows/speedbay-ci.yml` | Org-layer CI: ruff + pytest over Speed Bay code only — see below |

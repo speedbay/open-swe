@@ -93,7 +93,7 @@ from .middleware.sandbox_circuit_breaker import post_sandbox_unreachable_notific
 # the module directly rather than via .middleware's lazy registry, so
 # agent/middleware/__init__.py stays unmodified and merge-clean.
 from .speedbay.conventions import SpeedbayConventionsMiddleware
-from .speedbay.forge_gates import ForgeGatesMiddleware
+from .speedbay.pr_standards import PRStandardsMiddleware
 from .speedbay.quality_gates import QualityGatesMiddleware
 from .prompt import OPEN_SWE_SHARED_BASE, construct_system_prompt
 from .runtime.constants import (
@@ -983,7 +983,7 @@ async def get_agent(config: RunnableConfig) -> Pregel:
                 # open_pull_request (OPE-8); deterministic and cheap, so it runs
                 # before the expensive quality gates below. Logic lives in
                 # agent/speedbay/.
-                ForgeGatesMiddleware(),
+                PRStandardsMiddleware(),
                 # SPEEDBAY REGISTRATION: per-project quality gates before
                 # open_pull_request (OPE-9); logic lives in agent/speedbay/.
                 QualityGatesMiddleware(),
