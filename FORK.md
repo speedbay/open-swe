@@ -160,7 +160,7 @@ Everything we add lives in files upstream does not own:
 | `speedbay/set_model.py` | Reads/sets the agent's default model (no dashboard needed) |
 | `speedbay/create_linear_webhook.py` | Creates/lists the Linear trigger webhooks (needs a temp admin key) |
 | `speedbay/docker/Dockerfile.sandbox` | The sandbox image (`openswe-sandbox:dev`) the docker backend boots |
-| `agent/speedbay/` | **All Speed Bay agent modules**: `conventions.py` (commit/PR contract middleware), `linear_guard.py` (OPE-23 self-trigger guard), `docker_sandbox.py` (OPE-7 docker backend) |
+| `agent/speedbay/` | **All Speed Bay agent modules**: `conventions.py` (commit/PR contract middleware), `linear_guard.py` (OPE-23 self-trigger guard), `docker_sandbox.py` (OPE-7 docker backend), `quality_gates.py` (OPE-9 pre-PR quality gates; commands ported from warehouse workflow.md — re-sync on change) |
 | `tests/speedbay/` | **All Speed Bay tests** + fixtures: conventions, linear guard, docker sandbox (incl. the negative isolation proof; self-skips without a docker daemon/image/App key) |
 | `.macroscope/` | Macroscope review config (OPE-26): blocking agent-hygiene CRA, org-layer Python correctness idioms, review-scope ignore file — see below |
 | `.github/workflows/speedbay-ci.yml` | Org-layer CI: ruff + pytest over Speed Bay code only — see below |
@@ -273,7 +273,7 @@ The upstream-owned files below carry edits. Each is marked in-code with
 
 | File | Edit | Why not elsewhere |
 |---|---|---|
-| `agent/server.py` | Import + one entry in the `get_agent()` middleware list | Sanctioned registration point; no alternative seam |
+| `agent/server.py` | Imports + two entries in the `get_agent()` middleware list (conventions, quality gates) | Sanctioned registration point; no alternative seam |
 | `agent/dashboard/options.py` | `kimi-k3-code` -> `kimi-k3` in `SUPPORTED_MODELS` and `DEPRECATED_MODEL_REPLACEMENTS` | Upstream ships a model id that does not exist on Fireworks (404 from the platform API). `SUPPORTED_MODEL_IDS` gates model selection, so it cannot be fixed from config. **File upstream so this deviation disappears.** |
 | `agent/webhooks/linear_routes.py` | Import + one guard call after the `botActor` check: drop comments authored by the runtime `LINEAR_API_KEY` (`agent/speedbay/linear_guard.py`, OPE-23) | Loop prevention must run at webhook-processing time; there is no sanctioned seam in the route. Logic lives in the org-layer module; the route carries only the call. |
 | `agent/utils/linear_team_repo_map.py` | Upstream's own workspace mapping replaced with an empty dict | Docs designate this file as deployer config. Our Linear team "Open SWE" collided with upstream's entry of the same name and routed to `langchain-ai/open-swe`, which the allowlist rejected. Empty mapping falls back to `DEFAULT_REPO_OWNER`/`DEFAULT_REPO_NAME` (`speedbay/warehouse`); per-comment `repo:owner/name` still overrides. |

@@ -93,6 +93,7 @@ from .middleware.sandbox_circuit_breaker import post_sandbox_unreachable_notific
 # the module directly rather than via .middleware's lazy registry, so
 # agent/middleware/__init__.py stays unmodified and merge-clean.
 from .speedbay.conventions import SpeedbayConventionsMiddleware
+from .speedbay.quality_gates import QualityGatesMiddleware
 from .prompt import OPEN_SWE_SHARED_BASE, construct_system_prompt
 from .runtime.constants import (
     DEFAULT_LLM_MAX_TOKENS,
@@ -977,6 +978,9 @@ async def get_agent(config: RunnableConfig) -> Pregel:
                 # no-AI-attribution rule to the system prompt. Kept here rather than in
                 # agent/prompt.py so upstream's hot prompt file stays unmodified.
                 SpeedbayConventionsMiddleware(),
+                # SPEEDBAY REGISTRATION: per-project quality gates before
+                # open_pull_request (OPE-9); logic lives in agent/speedbay/.
+                QualityGatesMiddleware(),
                 ModelCallLimitMiddleware(run_limit=MODEL_CALL_RECURSION_LIMIT, exit_behavior="end"),
                 ToolErrorMiddleware(),
                 SubdirAgentsReadMiddleware(),
