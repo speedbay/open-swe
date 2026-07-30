@@ -36,7 +36,10 @@ and the one state transition described below.
    - **Declared commands are mandatory.** If a criterion, or the merged PR
      body's `## Verification` section, declares a runnable command, run it and
      record the exact command, exit code, and observed vs expected result. A
-     declared command you cannot run or that fails is an unmet criterion.
+     declared command you cannot run, or whose observed result does not match
+     its declared expected result, is an unmet criterion — judge against the
+     declared expectation, not against exit 0 (a declared expected nonzero
+     exit that occurs as declared satisfies the criterion).
    - **Repo-documented checks are encouraged.** For criteria that imply
      runtime behavior without declaring a command ("tests pass", "the
      endpoint rejects X"), use the repository's own documented verification —
