@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks
+from langgraph_sdk.schema import MultitaskStrategy
 
 from ..webhooks import common
 from . import linear_guard
@@ -225,15 +226,19 @@ def _build_prompt(
     )
 
 
-async def process_verify_dispatch(issue_data: dict[str, Any]) -> bool:
+async def process_verify_dispatch(
+    issue_data: dict[str, Any], *, multitask_strategy: MultitaskStrategy = "interrupt"
+) -> bool:
     """Resolve repo + issue context and dispatch the verification run.
 
     Mirrors upstream's ``process_linear_issue`` dispatch shape (thread owner
     metadata, ``dispatch_agent_run``, trace comment) but with a distinct
     deterministic thread id — ``verify:<issue-id>`` — so verification never
     interrupts the issue's implementation thread, and with the verification
-    contract as the prompt instead of the implementation prompt. Returns
-    whether a run was dispatched.
+    contract as the prompt instead of the implementation prompt. The conflict
+    strategy defaults to webhook follow-up behavior; the sweep passes
+    ``"reject"`` so it cannot interrupt a live verifier. Returns whether a run
+    was dispatched.
     """
     issue_id = issue_data.get("id", "")
     if await _is_foreign_issue(issue_id):
@@ -292,6 +297,7 @@ async def process_verify_dispatch(issue_data: dict[str, Any]) -> bool:
         configurable,
         source="linear",
         metadata=common._AGENT_VERSION_METADATA,
+        multitask_strategy=multitask_strategy,
     )
     # Deliberately no post_linear_trace_comment: the verifier's write-back
     # contract is one Linear comment — the verdict — and nothing else.

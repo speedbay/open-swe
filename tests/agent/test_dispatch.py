@@ -110,3 +110,19 @@ async def test_create_durable_run_preserves_existing_prepare_id_and_stream_kwarg
     assert created["stream_mode"] == ["values"]
     assert created["stream_resumable"] is True
     assert created["config"]["configurable"]["prepare_run_id"] == "existing"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_agent_run_forwards_conflict_strategy() -> None:
+    client = _FakeClient()
+
+    await dispatch.dispatch_agent_run(
+        "thread-1",
+        "verify",
+        {},
+        source="linear",
+        client=client,
+        multitask_strategy="reject",
+    )
+
+    assert client.runs.created[0]["multitask_strategy"] == "reject"

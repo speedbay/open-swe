@@ -88,8 +88,9 @@ async def sweep_stale_verify_issues(*, min_age_seconds: int | None = None) -> di
 
     Walks every issue whose state is ``ready-for-verify`` and whose
     ``updatedAt`` is older than the cutoff, skips those with a busy verify
-    thread, and dispatches the rest. Per-issue work is wrapped so one bad
-    issue never aborts the sweep.
+    thread, and dispatches the rest with server-side conflict rejection so a
+    race cannot interrupt a run. Per-issue work is wrapped so one bad issue
+    never aborts the sweep.
 
     Returns counts: ``{"checked", "skipped_busy", "dispatched", "errors"}``.
     """
@@ -108,7 +109,17 @@ async def sweep_stale_verify_issues(*, min_age_seconds: int | None = None) -> di
                 skipped_busy += 1
                 continue
             logger.info("Sweep re-dispatching verification for %s", identifier)
-            if await verify_trigger.process_verify_dispatch(issue):
+            try:
+                did_dispatch = await verify_trigger.process_verify_dispatch(
+                    issue, multitask_strategy="reject"
+                )
+            except Exception as exc:  # noqa: BLE001
+                if getattr(exc, "status_code", None) == 409:
+                    logger.info("Sweep skipping %s: verify run won dispatch race", identifier)
+                    skipped_busy += 1
+                    continue
+                raise
+            if did_dispatch:
                 dispatched += 1
         except Exception:  # noqa: BLE001
             logger.exception("Sweep failed for %s; continuing", identifier)

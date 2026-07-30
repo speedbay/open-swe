@@ -38,10 +38,7 @@ def _client():
 
 
 async def _existing() -> list[Any]:
-    crons = await _client().crons.search(limit=100)
-    return [
-        c for c in crons if isinstance(c, dict) and (c.get("metadata") or {}).get("kind") == KIND
-    ]
+    return await _client().crons.search(metadata={"kind": KIND}, limit=1)
 
 
 async def list_crons() -> None:
