@@ -5,7 +5,9 @@ This repo is our **deployment repo**: Speed Bay customizations live in files
 upstream does not touch, so pulling upstream improvements stays a clean merge.
 
 Upstream `docs/INSTALLATION.md` remains authoritative for install steps. This
-file is authoritative for **fork conventions only**.
+file is authoritative for **fork conventions only**. Onboarding from zero —
+new teammate or new operator machine — follows the ordered checklist in
+[`SETUP.md`](SETUP.md), which sequences the sections below.
 
 ## Upstream sync
 
