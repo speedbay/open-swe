@@ -76,7 +76,12 @@ def _request(
         args = {"base": "main", "head": head, "title": title, "body": body or _body()}
 
     class Request:
-        tool_call = {"name": tool, "args": args, "id": "call-1"}
+        def __init__(self, tool_call: dict[str, Any] | None = None) -> None:
+            self.tool_call = tool_call or {"name": tool, "args": args, "id": "call-1"}
+
+        def override(self, *, tool_call: dict[str, Any]) -> Request:
+            """Immutable-copy override, mirroring ToolCallRequest.override."""
+            return Request(tool_call)
 
     return Request()
 
@@ -160,6 +165,37 @@ def test_compliant_diff_and_hygiene_open_normally(monkeypatch) -> None:
     result = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _pass_handler))
     assert result == "pr-opened"
     assert backend.commands[0].endswith(f"git diff --numstat origin/main...{BRANCH}")
+
+
+def test_gate_passing_pr_is_forced_ready_for_review(monkeypatch) -> None:
+    """OPE-34: a passing open_pull_request reaches the tool with draft=False,
+    even when the model explicitly requested a draft — without mutating the
+    original tool call (it is the same dict as the AIMessage history record)."""
+    _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"))
+    request = _request()
+    request.tool_call["args"]["draft"] = True  # the upstream prompt's habit
+
+    seen: dict[str, Any] = {}
+
+    async def capture_handler(req: Any) -> Any:
+        seen.update(req.tool_call["args"])
+        return "pr-opened"
+
+    assert _run(PRStandardsMiddleware().awrap_tool_call(request, capture_handler)) == "pr-opened"
+    assert seen["draft"] is False
+    # The original request's tool call (== the persisted AIMessage record)
+    # must keep the model's actual argument.
+    assert request.tool_call["args"]["draft"] is True
+
+
+def test_blocked_pr_args_left_untouched(monkeypatch) -> None:
+    """The draft rewrite applies only after the gate passes — a blocked call
+    never reaches the tool, so its args are irrelevant but must not be
+    silently rewritten (evidence in the block message stays faithful)."""
+    _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
+    request = _request()
+    _payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
+    assert "draft" not in request.tool_call["args"]
 
 
 def test_oversized_diff_blocked_with_cap_and_split_instruction(monkeypatch) -> None:

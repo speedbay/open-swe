@@ -24,11 +24,12 @@ import json
 import logging
 import shlex
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 import attrs
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from langchain_core.messages import ToolMessage
+from langchain_core.messages.tool import ToolCall
 from langgraph.config import get_config
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
@@ -68,6 +69,23 @@ async def _numstat(backend: Any, base: str, head: str) -> tuple[str, bool] | Non
             output = getattr(response, "output", "") or ""
             return output, bool(getattr(response, "truncated", False))
     return None
+
+
+def _force_ready_for_review(request: ToolCallRequest) -> ToolCallRequest:
+    """Copy a gate-passing ``open_pull_request`` request with ``draft: False``.
+
+    Upstream defaults the tool to draft PRs and its prompt reinforces that;
+    Speed Bay's flow expects ready-for-review PRs (OPE-34). Deterministic
+    arg rewrite — the model cannot opt back into drafts. Uses the immutable
+    ``request.override(...)`` pattern with copied dicts: ``request.tool_call``
+    is the same dict stored in the ``AIMessage`` conversation history, so
+    mutating it in place would corrupt the persisted tool-call record.
+    """
+    tool_call = getattr(request, "tool_call", None)
+    if not (isinstance(tool_call, dict) and isinstance(tool_call.get("args"), dict)):
+        return request
+    ready = {**tool_call, "args": {**tool_call["args"], "draft": False}}
+    return request.override(tool_call=cast("ToolCall", ready))
 
 
 def _issue_id(configurable: dict[str, Any]) -> str | None:
@@ -127,7 +145,9 @@ class PRStandardsMiddleware(AgentMiddleware):
         if _tool_name(request) != "open_pull_request":
             return await handler(request)
         gate_block = await self._gate_open_pull_request(request)
-        return gate_block if gate_block is not None else await handler(request)
+        if gate_block is not None:
+            return gate_block
+        return await handler(_force_ready_for_review(request))
 
     async def _gate_open_pull_request(self, request: ToolCallRequest) -> ToolMessage | None:
         try:
