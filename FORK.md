@@ -475,6 +475,31 @@ rule: a run that dies immediately at its first model call with a 4xx from
 `api.fireworks.ai` is a **billing/cap event, not a code fault** — check the
 Fireworks balance before debugging anything.
 
+## Fireworks Zero Data Retention (OPE-37)
+
+Company policy requires strict ZDR for all prompt/generation data sent to
+Fireworks. Per the official policy
+(<https://docs.fireworks.ai/guides/security_compliance/data_handling>), ZDR is
+the **default** — prompts/generations live only in volatile memory — but only
+on the ZDR surface: **open models over the Chat Completions API**. The three
+documented ways out, and how this fork closes each:
+
+| ZDR escape hatch | Our posture |
+|---|---|
+| Responses API with `store=True` (its default; retains conversations 30 days) | Fireworks models build as `langchain_fireworks.ChatFireworks` → Chat Completions only. The Responses-API path in `agent/utils/model.py` (`use_responses_api`/`store`) is gated on `openai:` ids and defaults `store=False` even there. |
+| Per-feature opt-in logging (FireOptimizer, fine-tuning datasets, batch files) | Not used. Console audit 2026-07-30 (evidence on OPE-37): Datasets, Fine-Tuning, and Batch API all empty. No self-serve "share data" toggle exists — opt-in logging is enterprise-contact-only, and ToS says content sharing is off by default. |
+| Proprietary Fireworks models (e.g. FireFunction — logs I/O 30 days) | Only open models are selectable. `SUPPORTED_MODELS` in `agent/dashboard/options.py` **is** the allowlist; profile, team-settings, and `set_model.py` writes all validate against `SUPPORTED_MODEL_IDS`. |
+
+Guardrail: `tests/models/test_fireworks_zdr.py` pins the ZDR-verified
+Fireworks ids and fails if an unvetted `fireworks:` id is added or if
+Fireworks kwargs ever carry `store`/`use_responses_api`. **Adding a Fireworks
+model** therefore has one extra step: confirm it is an open model, then extend
+`ZDR_VERIFIED_FIREWORKS_IDS` in that test.
+
+Caveat: with `LANGSMITH_GATEWAY_ENABLED`, calls proxy through the LangSmith
+LLM Gateway, which traces every call — Fireworks-side ZDR still holds, but
+LangSmith retention is a separate vendor question outside this section.
+
 ## Known issues
 
 - **Studio graph preview 500s** — `langgraph-api` 0.10.3 substitutes
