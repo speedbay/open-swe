@@ -365,6 +365,7 @@ different, unlabeled failure. Complete ALL of them before the first login:
 | `DASHBOARD_ALLOWED_ORIGINS` (`.env`) | `http://localhost:3000` | CORS off — API calls from the UI fail |
 | `TOKEN_ENCRYPTION_KEY` (`.env`) | a **Fernet** key: `.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'` | callback 400 `{"detail":"unknown error"}` (`EncryptionKeyMissingError` in the log) |
 | `CONFIGURED_ADMINS` (`.env`) | comma-separated GitHub logins/emails | admin pages (user mappings, enabled repos) locked |
+| `ALLOWED_GITHUB_ORGS` (`.env`) | `speedbay` | org gate disabled (fail-open) — **any** GitHub account can log in and read threads |
 
 > Docs say `openssl rand -base64 32` for `TOKEN_ENCRYPTION_KEY`, but the code
 > feeds it straight to `Fernet(...)`, which requires **url-safe** base64 —
@@ -372,7 +373,7 @@ different, unlabeled failure. Complete ALL of them before the first login:
 
 The GitHub App must also list `http://localhost:2024/dashboard/api/auth/callback`
 as a callback URL (§3b) — App settings, not env. Restart both processes
-(`speedbay/openswe stop && start`; re-run `pnpm dev`) after changing either
+(`speedbay/openswe stop && speedbay/openswe start`; re-run `pnpm dev`) after changing either
 env file. When a login fails with a generic JSON error, the real exception is
 in `/tmp/openswe-backend.log`.
 
