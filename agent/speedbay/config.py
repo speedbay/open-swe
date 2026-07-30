@@ -48,6 +48,19 @@ def sandbox_memory() -> str:
     return os.getenv(MEMORY_ENV, DEFAULT_MEMORY)
 
 
+# --- Verify sweep (verify_sweep.py) ------------------------------------------
+
+VERIFY_SWEEP_MIN_AGE_ENV = "OPENSWE_VERIFY_SWEEP_MIN_AGE_SECONDS"
+# One hour: long enough that a webhook-dispatched verify run has finished, so
+# the sweep never races the fast path it backs up.
+DEFAULT_VERIFY_SWEEP_MIN_AGE_SECONDS = 3600
+
+
+def verify_sweep_min_age_seconds() -> int:
+    """Age an issue must sit in ready-for-verify before the sweep re-dispatches."""
+    return int(os.getenv(VERIFY_SWEEP_MIN_AGE_ENV, str(DEFAULT_VERIFY_SWEEP_MIN_AGE_SECONDS)))
+
+
 # --- PR gates (quality_gates.py, pr_standards.py) -----------------------------
 
 WORKSPACE = "/workspace"  # sandbox checkout root both gates diff against

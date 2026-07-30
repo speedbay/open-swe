@@ -29,6 +29,12 @@ async def _launch(state: SchedulerState, config: RunnableConfig) -> dict[str, An
     task = state.get("task") or configurable.get("task")
     if task == "reconcile":
         return {"result": await reconcile_stale_runs()}
+    # SPEEDBAY REGISTRATION (OPE-42): hourly re-dispatch of missed
+    # ready-for-verify issues; logic in agent/speedbay/verify_sweep.py.
+    if task == "verify_sweep":
+        from .speedbay.verify_sweep import sweep_stale_verify_issues
+
+        return {"result": await sweep_stale_verify_issues()}
     schedule_id = state.get("schedule_id") or configurable.get("schedule_id")
     if not isinstance(schedule_id, str) or not schedule_id:
         logger.warning("Scheduled agent tick missing schedule_id")
