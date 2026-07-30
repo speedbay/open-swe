@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from agent.speedbay import linear_guard as speedbay_linear_guard
+from agent.speedbay import verify_trigger as speedbay_verify_trigger
 
 from . import common
 from . import linear as service
@@ -31,6 +32,12 @@ async def linear_webhook(  # noqa: PLR0911, PLR0912, PLR0915
     except common.json.JSONDecodeError:
         common.logger.exception("Failed to parse webhook JSON")
         return {"status": "error", "message": "Invalid JSON"}
+
+    # SPEEDBAY REGISTRATION (OPE-39): issues entering ready-for-verify dispatch
+    # a completion-verification run; all logic in agent/speedbay/verify_trigger.py.
+    verify_response = await speedbay_verify_trigger.maybe_handle(payload, background_tasks)
+    if verify_response is not None:
+        return verify_response
 
     if payload.get("type") != "Comment":
         common.logger.debug("Ignoring webhook: not a Comment event")
