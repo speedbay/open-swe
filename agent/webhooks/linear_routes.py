@@ -57,6 +57,13 @@ async def linear_webhook(  # noqa: PLR0911, PLR0912, PLR0915
         common.logger.info("Ignoring webhook: comment authored by the runtime Linear key")
         return {"status": "ignored", "reason": "Comment authored by the runtime Linear key"}
 
+    # SPEEDBAY DEVIATION (OPE-36): multi-laptop deployments share the Linear
+    # webhook fan-out; each instance acts only on its owner's comments so one
+    # mention triggers exactly one backend. Unscoped instances accept all.
+    if speedbay_linear_guard.is_foreign_comment(payload):
+        common.logger.info("Ignoring webhook: comment author outside this instance's owner scope")
+        return {"status": "ignored", "reason": "Comment author outside this instance's owner scope"}
+
     comment_body = data.get("body", "")
     bot_message_prefixes = [
         "🔐 **GitHub Authentication Required**",

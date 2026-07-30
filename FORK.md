@@ -279,7 +279,7 @@ The upstream-owned files below carry edits. Each is marked in-code with
 | `agent/scheduler.py` | Import + `strip_server_runtime(config or {})` at its single `.with_config(...)` site (OPE-15) | The only langgraph.json factory registered without `traced_graph_factory`, so it needs the strip locally. |
 | `pyproject.toml` | One added floor: `langgraph-api>=0.11.1` (OPE-15) | Upstream pins `langgraph>=1.1.10` unbounded, so uv resolves langgraph 1.2.x against langgraph-api 0.10.3 — below Studio's required 0.11. Single minimal line; re-apply after upstream merges. |
 | `agent/dashboard/options.py` | `kimi-k3-code` -> `kimi-k3` in `SUPPORTED_MODELS` and `DEPRECATED_MODEL_REPLACEMENTS` | Upstream ships a model id that does not exist on Fireworks (404 from the platform API). `SUPPORTED_MODEL_IDS` gates model selection, so it cannot be fixed from config. **File upstream so this deviation disappears.** |
-| `agent/webhooks/linear_routes.py` | Import + one guard call after the `botActor` check: drop comments authored by the runtime `LINEAR_API_KEY` (`agent/speedbay/linear_guard.py`, OPE-23) | Loop prevention must run at webhook-processing time; there is no sanctioned seam in the route. Logic lives in the org-layer module; the route carries only the call. |
+| `agent/webhooks/linear_routes.py` | Import + two guard calls after the `botActor` check: drop comments authored by the runtime `LINEAR_API_KEY` (OPE-23) and comments outside this instance's `OPENSWE_TRIGGER_OWNER_EMAILS` scope (OPE-36) | Loop prevention and instance routing must run at webhook-processing time; there is no sanctioned seam in the route. Logic lives in `agent/speedbay/linear_guard.py`; the route carries only the calls. |
 | `agent/utils/linear_team_repo_map.py` | Upstream's own workspace mapping replaced with an empty dict | Docs designate this file as deployer config. Our Linear team "Open SWE" collided with upstream's entry of the same name and routed to `langchain-ai/open-swe`, which the allowlist rejected. Empty mapping falls back to `DEFAULT_REPO_OWNER`/`DEFAULT_REPO_NAME` (`speedbay/warehouse`); per-comment `repo:owner/name` still overrides. |
 
 Deliberately **not** patched, to keep the merge surface small:
@@ -320,6 +320,13 @@ night to learn:
   account or the synthetic-delivery scripts. The conventions middleware also
   instructs the agent never to write `@openswe` in Linear comments
   (belt-and-braces).
+- **Multi-laptop deployments scope triggers per instance (OPE-36).** Linear
+  webhooks fan out to every registered URL, so with one stack per dev a
+  single mention would start duplicate runs. Each instance sets
+  `OPENSWE_TRIGGER_OWNER_EMAILS="<owner-email>"` and drops comments authored
+  by anyone else (case-insensitive, comma-separated list; fail-closed when a
+  scoped payload has no author email). Unset means unscoped — the
+  single-instance deployment keeps accepting every human mention.
 - The runtime `LINEAR_API_KEY` is a swe-service-bot service-account key: agent
   comments on tickets are attributed to `swe-service-bot@speedbay.com`, and the key
   is revocable without touching anyone's personal access.
