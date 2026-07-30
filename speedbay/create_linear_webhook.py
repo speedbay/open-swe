@@ -70,7 +70,9 @@ def create(team_key: str | None) -> None:
         "label": "Open SWE" + (f" (team {team_key})" if team_key else ""),
         "url": URL,
         "secret": ENV["LINEAR_WEBHOOK_SECRET"],
-        "resourceTypes": ["Comment"],
+        # "Issue" delivers state-change (update) events; the verify trigger
+        # (OPE-39) dispatches when an issue enters ready-for-verify.
+        "resourceTypes": ["Comment", "Issue"],
         "enabled": True,
     }
     if team_key:
