@@ -289,6 +289,9 @@ def test_dispatch_builds_verify_prompt_on_distinct_thread():
     assert "Verify completion of the following Linear issue" in prompt
     assert "A merge never means done." in prompt
     assert "Exactly one verdict: `done` or `incomplete`." in prompt
+    # OPE-44: deferral is forbidden — evidence missing now means incomplete now.
+    assert "Never defer. Evidence missing now means `incomplete` now." in prompt
+    assert "never call `schedule_thread_wakeup`" in prompt
     assert "gh pr diff" in prompt
     assert "`done` = `state-done`" in prompt
     assert "`incomplete` = `state-inc`" in prompt
