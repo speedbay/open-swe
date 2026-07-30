@@ -40,6 +40,7 @@ class _FakeBackgroundTasks(BackgroundTasks):
 
 
 def _maybe_handle(payload: dict[str, Any], *, self_authored: bool = False):
+    verify_trigger._seen_transitions.clear()  # isolate the dedup guard per test
     tasks = _FakeBackgroundTasks()
     with patch.object(
         verify_trigger.linear_guard,
@@ -106,33 +107,80 @@ def test_self_authored_transition_is_dropped():
     assert tasks.calls == []
 
 
-def test_scoped_instance_drops_foreign_actor(monkeypatch):
+def _scope_check(assignee_email: str | None) -> bool:
+    with patch.object(
+        verify_trigger,
+        "_assignee_email",
+        new_callable=AsyncMock,
+        return_value=assignee_email,
+    ):
+        return asyncio.run(verify_trigger._is_foreign_issue("issue-1"))
+
+
+def test_unscoped_instance_accepts_without_assignee_lookup(monkeypatch):
+    monkeypatch.delenv("OPENSWE_TRIGGER_OWNER_EMAILS", raising=False)
+    with patch.object(verify_trigger, "_assignee_email", new_callable=AsyncMock) as lookup:
+        assert asyncio.run(verify_trigger._is_foreign_issue("issue-1")) is False
+        assert lookup.await_count == 0  # single-instance path never hits Linear
+
+
+def test_scoped_instance_drops_foreign_assignee(monkeypatch):
     monkeypatch.setenv("OPENSWE_TRIGGER_OWNER_EMAILS", "someone-else@speedbay.com")
-    result, tasks = _maybe_handle(_payload())
-    assert result is not None and result["status"] == "ignored"
-    assert tasks.calls == []
+    assert _scope_check("owner@speedbay.com") is True
 
 
-def test_scoped_instance_accepts_owner_actor(monkeypatch):
-    monkeypatch.setenv("OPENSWE_TRIGGER_OWNER_EMAILS", "Forge-Bot@speedbay.com")
-    result, tasks = _maybe_handle(_payload())
-    assert result is not None and result["status"] == "accepted"
+def test_scoped_instance_accepts_owner_assignee(monkeypatch):
+    # Scoping keys on the issue assignee, not the transition actor: the
+    # ready-for-verify transition is authored by the shared merge automation,
+    # which can never identify the owning operator.
+    monkeypatch.setenv("OPENSWE_TRIGGER_OWNER_EMAILS", "Owner@speedbay.com")
+    assert _scope_check("owner@speedbay.com") is False
+
+
+def test_scoped_instance_fails_closed_when_unassigned(monkeypatch):
+    monkeypatch.setenv("OPENSWE_TRIGGER_OWNER_EMAILS", "owner@speedbay.com")
+    assert _scope_check(None) is True
+
+
+def test_duplicate_delivery_dispatches_exactly_once():
+    # Live-verified: each event arrives once per covering webhook with an
+    # identical data.updatedAt; the second delivery must not start a run.
+    verify_trigger._seen_transitions.clear()
+    tasks = _FakeBackgroundTasks()
+    with patch.object(
+        verify_trigger.linear_guard,
+        "is_self_comment",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        first = asyncio.run(verify_trigger.maybe_handle(_payload(), tasks))
+        second = asyncio.run(verify_trigger.maybe_handle(_payload(), tasks))
+    assert first is not None and first["status"] == "accepted"
+    assert second is not None and second["status"] == "ignored"
+    assert "Duplicate" in second["reason"]
     assert len(tasks.calls) == 1
 
 
-def test_scoped_instance_fails_closed_without_actor_email(monkeypatch):
-    monkeypatch.setenv("OPENSWE_TRIGGER_OWNER_EMAILS", "forge-bot@speedbay.com")
-    p = _payload()
-    del p["actor"]["email"]  # bot-actor transitions carry no email
-    result, tasks = _maybe_handle(p)
-    assert result is not None and result["status"] == "ignored"
-    assert tasks.calls == []
+def test_reentry_with_new_updated_at_dispatches_again():
+    # incomplete -> rework -> merge produces a fresh transition (new updatedAt).
+    verify_trigger._seen_transitions.clear()
+    tasks = _FakeBackgroundTasks()
+    later = _payload()
+    later["data"]["updatedAt"] = "2026-07-31T00:00:00.000Z"
+    with patch.object(
+        verify_trigger.linear_guard,
+        "is_self_comment",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        first = asyncio.run(verify_trigger.maybe_handle(_payload(), tasks))
+        second = asyncio.run(verify_trigger.maybe_handle(later, tasks))
+    assert first is not None and first["status"] == "accepted"
+    assert second is not None and second["status"] == "accepted"
+    assert len(tasks.calls) == 2
 
 
-def test_duplicate_deliveries_share_one_deterministic_thread():
-    # Live-verified: each event arrives once per covering webhook. Dedup is
-    # structural — both deliveries derive the same thread id, and
-    # dispatch_agent_run routes through if_not_exists="create".
+def test_verify_thread_is_deterministic_and_distinct_from_impl_thread():
     issue_id = _payload()["data"]["id"]
     from agent.webhooks import common
 
@@ -152,6 +200,7 @@ def _run_dispatch(
     team_repo: dict[str, str] | None = None,
     default_repo: dict[str, str] | None = None,
     allowed: bool = True,
+    verdict_states: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     captured: dict[str, Any] = {}
 
@@ -184,6 +233,12 @@ def _run_dispatch(
             return_value=default_repo,
         ),
         patch.object(verify_trigger.common, "_is_repo_allowed", return_value=allowed),
+        patch.object(
+            verify_trigger,
+            "_verdict_state_ids",
+            new_callable=AsyncMock,
+            return_value=verdict_states or {},
+        ),
         patch.object(verify_trigger.common, "dispatch_agent_run", side_effect=fake_dispatch),
         patch.object(
             verify_trigger.common,
@@ -197,6 +252,8 @@ def _run_dispatch(
         ) as trace,
     ):
         asyncio.run(verify_trigger.process_verify_dispatch(issue_data))
+        # The write-back contract is one Linear comment (the verdict); the
+        # "On it!" trace comment must never be posted by verify dispatch.
         captured["trace_called"] = trace.await_count
     return captured
 
@@ -208,7 +265,10 @@ def _fixture_issue() -> dict[str, Any]:
 def test_dispatch_builds_verify_prompt_on_distinct_thread():
     issue = _fixture_issue()
     captured = _run_dispatch(
-        issue, full_issue=issue, team_repo={"owner": "speedbay", "name": "warehouse"}
+        issue,
+        full_issue=issue,
+        team_repo={"owner": "speedbay", "name": "warehouse"},
+        verdict_states={"done": "state-done", "incomplete": "state-inc"},
     )
     from agent.webhooks import common
 
@@ -220,11 +280,24 @@ def test_dispatch_builds_verify_prompt_on_distinct_thread():
     assert "A merge never means done." in prompt
     assert "Exactly one verdict: `done` or `incomplete`." in prompt
     assert "gh pr diff" in prompt
+    assert "`done` = `state-done`" in prompt
+    assert "`incomplete` = `state-inc`" in prompt
     assert "Please analyze this issue and implement" not in prompt
     assert captured["configurable"]["repo"] == {"owner": "speedbay", "name": "warehouse"}
     assert captured["configurable"]["linear_issue"]["identifier"] == "OPE-41"
     assert captured["upsert_title"] == "Verify: OPE-41"
-    assert captured["trace_called"] == 1
+    assert captured["trace_called"] == 0  # single-comment write-back: no "On it!"
+
+
+def test_dispatch_marks_unresolved_state_ids_in_prompt():
+    issue = _fixture_issue()
+    captured = _run_dispatch(
+        issue,
+        full_issue=issue,
+        team_repo={"owner": "speedbay", "name": "warehouse"},
+        verdict_states={},
+    )
+    assert "could not be resolved server-side" in captured["content"]
 
 
 def test_dispatch_falls_back_to_team_default_repo():

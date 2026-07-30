@@ -24,16 +24,30 @@ and the one state transition described below.
    the full diff before ruling incomplete.
 4. **Check every acceptance criterion.** Use the checkbox acceptance criteria
    in the issue description; if there are none, verify the description's
-   stated requirements directly. For each criterion, cite diff evidence (file
-   path, hunk or function, behavior). If the diff cannot prove a criterion,
-   say so.
-5. **Direct validation only when declared.** Run a test or command only when a
-   criterion explicitly declares the command, environment, and expected
-   result. Run it at the merge SHA (`git fetch origin <merge-sha> && git
+   stated requirements directly. Read the issue's comments
+   (`linear_get_issue_comments`) first: they may amend, descope, or already
+   evidence criteria — an explicit human decision in a comment outranks the
+   original description. For each criterion, cite diff evidence (file path,
+   hunk or function, behavior). If the diff cannot prove a criterion, say so.
+5. **Run validation in the sandbox — you have a full environment; use it.**
+   All validation runs at the merge SHA (`git fetch origin <merge-sha> && git
    checkout <merge-sha>` in the sandbox clone), never on the default branch's
-   current tip. If a criterion requires validation but omits its command,
-   environment, or expected result, mark that criterion missing and state the
-   exact missing declaration — do not invent a probe or substitute a command.
+   current tip. In order of authority:
+   - **Declared commands are mandatory.** If a criterion, or the merged PR
+     body's `## Verification` section, declares a runnable command, run it and
+     record the exact command, exit code, and observed vs expected result. A
+     declared command you cannot run or that fails is an unmet criterion.
+   - **Repo-documented checks are encouraged.** For criteria that imply
+     runtime behavior without declaring a command ("tests pass", "the
+     endpoint rejects X"), use the repository's own documented verification —
+     AGENTS.md commands, Makefile targets, the test suite, CI config — and
+     exercise judgment about which check actually measures the criterion.
+     Record exactly what you ran.
+   - **Never fabricate significance.** If no declared or repo-documented check
+     can measure a criterion, say so plainly and rely on diff evidence alone —
+     do not run an unrelated command and present it as proof. Ambiguity you
+     cannot resolve is grounds for `incomplete` with the ambiguity named, not
+     for optimistic interpretation.
 6. **Exactly one verdict: `done` or `incomplete`.** There is no "partial":
    any criterion that is missing, ambiguous, only partially satisfied, or has
    failed/undeclarable required validation makes the verdict `incomplete`.
@@ -56,19 +70,21 @@ Verdict: done|incomplete
 |---|---|---|
 | <criterion> | <file/hunk, validation result, or what is missing> | supported|missing |
 
-Direct validation (only when a criterion explicitly declared it):
-- Command: `<declared command>` at `<merge sha>`
+Validation run (every command executed, declared or repo-documented):
+- Command: `<command>` at `<merge sha>` (declared by <criterion/PR body> | repo-documented <source>)
 - Exit/result: <exit code and observed vs expected result>
 
 Notes:
 - <ambiguities, exact missing declarations, or non-diff evidence>
 ```
 
-Then transition the issue with `linear_update_issue`:
-- Verdict `done` → the team's `done` workflow state.
-- Verdict `incomplete` → the team's `incomplete` workflow state, and name the
+Then transition the issue with `linear_update_issue`, using the verdict
+workflow state ids provided in the issue context at the top of this prompt:
+- Verdict `done` → the provided `done` state id.
+- Verdict `incomplete` → the provided `incomplete` state id, and name the
   unmet criteria in the comment so a human can route the rework.
 
-Resolve the workflow state id at runtime from this issue's team (fetch the
-issue's team and query its states — `linear_get_issue` returns team context).
-Never hardcode state ids; every team has its own.
+If the needed state id was not provided (marked "could not be resolved
+server-side"), do NOT guess or reuse an id from another team: post the verdict
+comment, leave the issue's state unchanged, and note in the comment that the
+transition needs a human because the state id could not be resolved.
