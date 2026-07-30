@@ -60,11 +60,15 @@ and the one state transition described below.
    not yet provisioned, a deployment not yet performed, a log not yet
    recorded) — makes that criterion missing and the verdict `incomplete`.
    Do not wait for it: never call `schedule_thread_wakeup` in a verification
-   run, never schedule any check-back, and never end the run with the issue
-   still in `ready-for-verify`. State the exact missing evidence in the
-   comment; the recovery path is that a human (or the rework flow) records
-   the evidence on the issue and re-queues verification by transitioning the
-   issue back to `ready-for-verify`.
+   run, never schedule any check-back, and never leave the issue in
+   `ready-for-verify` *as a way of deferring the verdict*. The one permitted
+   way to end with the state unchanged is the write-back section's
+   unresolved-state-id path — verdict comment posted, transition flagged for
+   a human — which publishes a verdict rather than deferring one; never
+   guess a state id to avoid that path. State the exact missing evidence in
+   the comment; the recovery path is that a human (or the rework flow)
+   records the evidence on the issue and re-queues verification by
+   transitioning the issue back to `ready-for-verify`.
 8. **Re-read before finalizing.** Immediately before posting the verdict,
    re-read the issue (`linear_get_issue`). If its state is already `done`,
    `incomplete`, or a canceled state — something else finalized it — post no
