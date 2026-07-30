@@ -107,3 +107,39 @@ def test_failed_call_uses_concurrent_siblings_resolution(monkeypatch: pytest.Mon
 def test_empty_payload_is_not_self(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(guard, "_viewer_id", lambda: _fixed_viewer(AUTHOR_ID))
     assert _run(guard.is_self_comment({})) is False
+
+
+# --- trigger-owner scope (OPE-36) --------------------------------------------
+
+
+def _comment_from(email: str | None) -> dict:
+    user = {"email": email} if email is not None else {}
+    return {"data": {"user": user, "body": "@openswe go"}}
+
+
+def test_unscoped_instance_accepts_everyone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENSWE_TRIGGER_OWNER_EMAILS", raising=False)
+    assert guard.is_foreign_comment(_comment_from("anyone@speedbay.com")) is False
+    assert guard.is_foreign_comment(_comment_from(None)) is False
+
+
+def test_scoped_instance_accepts_only_its_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENSWE_TRIGGER_OWNER_EMAILS", "sbrown@speedbay.com")
+    assert guard.is_foreign_comment(_comment_from("sbrown@speedbay.com")) is False
+    assert guard.is_foreign_comment(_comment_from("SBrown@Speedbay.com")) is False  # case
+    assert guard.is_foreign_comment(_comment_from("tkelley@speedbay.com")) is True
+
+
+def test_scoped_instance_supports_multiple_owners(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENSWE_TRIGGER_OWNER_EMAILS", "a@x.com, b@x.com")
+    assert guard.is_foreign_comment(_comment_from("b@x.com")) is False
+    assert guard.is_foreign_comment(_comment_from("c@x.com")) is True
+
+
+def test_scoped_instance_drops_missing_email_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENSWE_TRIGGER_OWNER_EMAILS", "sbrown@speedbay.com")
+    assert guard.is_foreign_comment(_comment_from(None)) is True
+    assert guard.is_foreign_comment(_comment_from("")) is True
+    assert guard.is_foreign_comment({}) is True

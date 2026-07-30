@@ -59,3 +59,16 @@ MAX_CORRECTIVE_ROUNDS = 3  # PR-standards blocks per thread before escalation (O
 # --- Linear (linear_guard.py) --------------------------------------------------
 
 LINEAR_GQL_URL = "https://api.linear.app/graphql"
+TRIGGER_OWNER_ENV = "OPENSWE_TRIGGER_OWNER_EMAILS"
+
+
+def trigger_owner_emails() -> frozenset[str]:
+    """Emails whose Linear comments this instance acts on (OPE-36).
+
+    Comma-separated, case-insensitive. Empty/unset means unscoped — the
+    single-instance deployment accepts every human mention. Multi-laptop
+    deployments set one owner per instance so a shared webhook fan-out
+    triggers exactly one backend.
+    """
+    raw = os.getenv(TRIGGER_OWNER_ENV, "")
+    return frozenset(e.strip().lower() for e in raw.split(",") if e.strip())

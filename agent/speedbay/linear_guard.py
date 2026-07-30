@@ -33,7 +33,7 @@ from typing import Any
 
 import httpx
 
-from .config import LINEAR_GQL_URL
+from .config import LINEAR_GQL_URL, trigger_owner_emails
 
 logger = logging.getLogger(__name__)
 
@@ -94,3 +94,22 @@ async def is_self_comment(payload: dict[str, Any]) -> bool:
         (payload.get("data") or {}).get("userId"),
     }
     return viewer in author_ids
+
+
+def is_foreign_comment(payload: dict[str, Any]) -> bool:
+    """True when this instance's trigger-owner scope excludes the comment.
+
+    Unscoped (``OPENSWE_TRIGGER_OWNER_EMAILS`` unset/empty) accepts everyone —
+    single-instance behavior. Scoped, the comment author's email must match
+    one owner email (case-insensitive); a scoped instance with no author
+    email in the payload drops the comment (fail-closed) rather than risk
+    two instances acting on it.
+    """
+    owners = trigger_owner_emails()
+    if not owners:
+        return False
+    email = ((payload.get("data") or {}).get("user") or {}).get("email")
+    if not isinstance(email, str) or not email.strip():
+        logger.info("trigger-owner scope: no author email in payload — dropping")
+        return True
+    return email.strip().lower() not in owners
