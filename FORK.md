@@ -502,6 +502,23 @@ Caveat: with `LANGSMITH_GATEWAY_ENABLED`, calls proxy through the LangSmith
 LLM Gateway, which traces every call — Fireworks-side ZDR still holds, but
 LangSmith retention is a separate vendor question outside this section.
 
+## Accepted dependency risks
+
+Reviewed 2026-07-30 against the live open Dependabot alerts. These alerts remain
+open as re-check reminders; this table is the exact accepted set.
+
+| Alert | Package / version | Accepted-risk rationale | Re-evaluate when |
+|---|---|---|---|
+| [#2 / GHSA-r28c-9q8g-f849](https://github.com/speedbay/open-swe/security/dependabot/2) (high) | `postcss@8.5.16` (patched in 8.5.18) | The disclosure requires attacker-controlled CSS. Vite/PostCSS only builds repository-owned dashboard CSS. | The dashboard processes untrusted CSS, or upstream resolves `postcss>=8.5.18`. |
+| [#1 / GHSA-9mqv-5hh9-4cgg](https://github.com/speedbay/open-swe/security/dependabot/1) (medium) | `@hono/node-server@2.0.5` (patched in 2.0.10) | The DoS requires a public `upgradeWebSocket` route. This package is transitive CLI/MCP tooling under `shadcn`; the dashboard does not run that server. | The shadcn MCP HTTP/WebSocket server is deployed or exposed, or upstream resolves `@hono/node-server>=2.0.10`. |
+
+Upstream `main` carried the same versions at this review. No fork-only override
+is justified while the vulnerable paths remain unreachable: it would change an
+upstream-owned pnpm override and generated lockfile without reducing exploitable
+risk. If the live open-alert set changes, update this table in the same change.
+No upstream report is required because no fork override was added; both public
+advisories already give upstream the patched floors.
+
 ## Known issues
 
 - **Studio graph preview 500s** — `langgraph-api` 0.10.3 substitutes
