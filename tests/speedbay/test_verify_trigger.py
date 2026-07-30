@@ -251,7 +251,7 @@ def _run_dispatch(
             new_callable=AsyncMock,
         ) as trace,
     ):
-        asyncio.run(verify_trigger.process_verify_dispatch(issue_data))
+        captured["dispatched"] = asyncio.run(verify_trigger.process_verify_dispatch(issue_data))
         # The write-back contract is one Linear comment (the verdict); the
         # "On it!" trace comment must never be posted by verify dispatch.
         captured["trace_called"] = trace.await_count
@@ -273,6 +273,7 @@ def test_dispatch_builds_verify_prompt_on_distinct_thread():
     from agent.webhooks import common
 
     assert captured["thread_id"] == common.generate_thread_id_from_issue(f"verify:{issue['id']}")
+    assert captured["dispatched"] is True
     prompt = captured["content"]
     # Issue context + the ported verification contract, not the implementation prompt.
     assert "OPE-41" in prompt
@@ -320,6 +321,7 @@ def test_dispatch_drops_disallowed_repo():
         allowed=False,
     )
     assert "thread_id" not in captured  # no run dispatched
+    assert captured["dispatched"] is False
 
 
 def test_dispatch_survives_issue_fetch_failure():

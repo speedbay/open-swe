@@ -58,7 +58,10 @@ DEFAULT_VERIFY_SWEEP_MIN_AGE_SECONDS = 3600
 
 def verify_sweep_min_age_seconds() -> int:
     """Age an issue must sit in ready-for-verify before the sweep re-dispatches."""
-    return int(os.getenv(VERIFY_SWEEP_MIN_AGE_ENV, str(DEFAULT_VERIFY_SWEEP_MIN_AGE_SECONDS)))
+    value = int(os.getenv(VERIFY_SWEEP_MIN_AGE_ENV, str(DEFAULT_VERIFY_SWEEP_MIN_AGE_SECONDS)))
+    if value < 0:
+        raise ValueError(f"{VERIFY_SWEEP_MIN_AGE_ENV} must be non-negative, got {value}")
+    return value
 
 
 # --- PR gates (quality_gates.py, pr_standards.py) -----------------------------

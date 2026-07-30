@@ -25,19 +25,24 @@ def _run_sweep(
     *,
     busy_ids: set[str] | None = None,
     fail_ids: set[str] | None = None,
+    dropped_ids: set[str] | None = None,
 ) -> tuple[dict[str, int], list[str]]:
     """Run the sweep with the Linear query, busy-check, and dispatch faked."""
     dispatched: list[str] = []
     busy = busy_ids or set()
     failing = fail_ids or set()
+    dropped = dropped_ids or set()
 
     async def fake_busy(issue_id: str) -> bool:
         return issue_id in busy
 
-    async def fake_dispatch(issue_data: dict[str, Any]) -> None:
+    async def fake_dispatch(issue_data: dict[str, Any]) -> bool:
         if issue_data["id"] in failing:
             raise RuntimeError("boom")
+        if issue_data["id"] in dropped:
+            return False
         dispatched.append(issue_data["identifier"])
+        return True
 
     with (
         patch.object(
@@ -66,6 +71,12 @@ def test_busy_verify_thread_is_skipped():
     assert dispatched == ["OPE-2"]
     assert counts["skipped_busy"] == 1
     assert counts["dispatched"] == 1
+
+
+def test_dropped_issue_is_not_counted_as_dispatched():
+    counts, dispatched = _run_sweep([_issue(1)], dropped_ids={"issue-1"})
+    assert dispatched == []
+    assert counts == {"checked": 1, "skipped_busy": 0, "dispatched": 0, "errors": 0}
 
 
 def test_one_failing_issue_does_not_abort_the_sweep():

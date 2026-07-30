@@ -225,18 +225,19 @@ def _build_prompt(
     )
 
 
-async def process_verify_dispatch(issue_data: dict[str, Any]) -> None:
+async def process_verify_dispatch(issue_data: dict[str, Any]) -> bool:
     """Resolve repo + issue context and dispatch the verification run.
 
     Mirrors upstream's ``process_linear_issue`` dispatch shape (thread owner
     metadata, ``dispatch_agent_run``, trace comment) but with a distinct
     deterministic thread id — ``verify:<issue-id>`` — so verification never
     interrupts the issue's implementation thread, and with the verification
-    contract as the prompt instead of the implementation prompt.
+    contract as the prompt instead of the implementation prompt. Returns
+    whether a run was dispatched.
     """
     issue_id = issue_data.get("id", "")
     if await _is_foreign_issue(issue_id):
-        return
+        return False
     full_issue = await common.fetch_linear_issue_details(issue_id) or issue_data
 
     team = full_issue.get("team") or issue_data.get("team") or {}
@@ -248,7 +249,7 @@ async def process_verify_dispatch(issue_data: dict[str, Any]) -> None:
         repo_config = await common.get_team_default_repo()
     if not repo_config:
         logger.warning("Verify dispatch for %s dropped: no repository configured", issue_id)
-        return
+        return False
     if not common._is_repo_allowed(repo_config):
         logger.warning(
             "Verify dispatch for %s dropped: repo %s/%s not in allowlist",
@@ -256,7 +257,7 @@ async def process_verify_dispatch(issue_data: dict[str, Any]) -> None:
             repo_config.get("owner"),
             repo_config.get("name"),
         )
-        return
+        return False
 
     identifier = full_issue.get("identifier", "") or issue_data.get("identifier", "")
     thread_id = common.generate_thread_id_from_issue(f"verify:{issue_id}")
@@ -300,3 +301,4 @@ async def process_verify_dispatch(issue_data: dict[str, Any]) -> None:
         thread_id,
         run.get("run_id") if isinstance(run, dict) else None,
     )
+    return True

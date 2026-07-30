@@ -108,8 +108,8 @@ async def sweep_stale_verify_issues(*, min_age_seconds: int | None = None) -> di
                 skipped_busy += 1
                 continue
             logger.info("Sweep re-dispatching verification for %s", identifier)
-            await verify_trigger.process_verify_dispatch(issue)
-            dispatched += 1
+            if await verify_trigger.process_verify_dispatch(issue):
+                dispatched += 1
         except Exception:  # noqa: BLE001
             logger.exception("Sweep failed for %s; continuing", identifier)
             errors += 1

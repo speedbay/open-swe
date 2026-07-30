@@ -28,3 +28,11 @@ def test_env_overrides_resolve_at_call_time(monkeypatch: pytest.MonkeyPatch) -> 
     assert config.sandbox_image() == "openswe-sandbox:test"
     assert config.sandbox_ttl_seconds() == 60
     assert config.sandbox_memory() == "1g"
+
+
+def test_verify_sweep_min_age_rejects_negative_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(config.VERIFY_SWEEP_MIN_AGE_ENV, "-1")
+    with pytest.raises(ValueError, match="must be non-negative"):
+        config.verify_sweep_min_age_seconds()
