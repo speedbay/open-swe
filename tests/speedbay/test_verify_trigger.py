@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from fastapi import BackgroundTasks
+from langgraph_sdk.schema import MultitaskStrategy
 
 from agent.speedbay import verify_trigger
 
@@ -201,14 +202,18 @@ def _run_dispatch(
     default_repo: dict[str, str] | None = None,
     allowed: bool = True,
     verdict_states: dict[str, str] | None = None,
+    multitask_strategy: MultitaskStrategy = "interrupt",
 ) -> dict[str, Any]:
     captured: dict[str, Any] = {}
 
-    async def fake_dispatch(thread_id, content, configurable, *, source, metadata=None):
+    async def fake_dispatch(
+        thread_id, content, configurable, *, source, metadata=None, multitask_strategy="interrupt"
+    ):
         captured["thread_id"] = thread_id
         captured["content"] = content
         captured["configurable"] = configurable
         captured["source"] = source
+        captured["multitask_strategy"] = multitask_strategy
         return {"run_id": "run-1"}
 
     async def fake_upsert(thread_id, **kwargs):
@@ -251,7 +256,11 @@ def _run_dispatch(
             new_callable=AsyncMock,
         ) as trace,
     ):
-        asyncio.run(verify_trigger.process_verify_dispatch(issue_data))
+        captured["dispatched"] = asyncio.run(
+            verify_trigger.process_verify_dispatch(
+                issue_data, multitask_strategy=multitask_strategy
+            )
+        )
         # The write-back contract is one Linear comment (the verdict); the
         # "On it!" trace comment must never be posted by verify dispatch.
         captured["trace_called"] = trace.await_count
@@ -273,6 +282,7 @@ def test_dispatch_builds_verify_prompt_on_distinct_thread():
     from agent.webhooks import common
 
     assert captured["thread_id"] == common.generate_thread_id_from_issue(f"verify:{issue['id']}")
+    assert captured["dispatched"] is True
     prompt = captured["content"]
     # Issue context + the ported verification contract, not the implementation prompt.
     assert "OPE-41" in prompt
@@ -287,6 +297,17 @@ def test_dispatch_builds_verify_prompt_on_distinct_thread():
     assert captured["configurable"]["linear_issue"]["identifier"] == "OPE-41"
     assert captured["upsert_title"] == "Verify: OPE-41"
     assert captured["trace_called"] == 0  # single-comment write-back: no "On it!"
+
+
+def test_dispatch_forwards_noninterrupting_strategy():
+    issue = _fixture_issue()
+    captured = _run_dispatch(
+        issue,
+        full_issue=issue,
+        team_repo={"owner": "speedbay", "name": "warehouse"},
+        multitask_strategy="reject",
+    )
+    assert captured["multitask_strategy"] == "reject"
 
 
 def test_dispatch_marks_unresolved_state_ids_in_prompt():
@@ -320,6 +341,7 @@ def test_dispatch_drops_disallowed_repo():
         allowed=False,
     )
     assert "thread_id" not in captured  # no run dispatched
+    assert captured["dispatched"] is False
 
 
 def test_dispatch_survives_issue_fetch_failure():
