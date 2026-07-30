@@ -91,7 +91,7 @@ several values **empty with an inline comment**, each failing differently:
 **Verify (no empty login-path vars):**
 
 ```bash
-awk -F= '/^[A-Z_]+=/{v=$2; sub(/[ \t]*#.*$/,"",v); gsub(/"/,"",v); if (length(v)==0) print $1}' .env
+awk -F= '/^[A-Z][A-Z0-9_]*=/{v=$2; sub(/[ \t]*#.*$/,"",v); gsub(/"/,"",v); if (length(v)==0) print $1}' .env
 ```
 
 Expected: **none of the B2 checklist vars appear.** Optional-feature vars may
