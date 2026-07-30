@@ -110,19 +110,32 @@ docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedb
 ### B4. Tunnel (per machine)
 
 FORK.md § Webhook tunnel → Per-machine setup: `cloudflared tunnel login`
-against the `speedbay.com` zone, then reuse the `openswe` tunnel (credentials
-via password manager) or create your own hostname.
+against the `speedbay.com` zone, then create your **own hostname** (e.g.
+`openswe-<you>.speedbay.com`).
+
+> **Multi-operator rule (OPE-36).** With one stack per laptop, every Linear
+> webhook fires to every registered URL. Before registering your webhook
+> (B5), set `OPENSWE_TRIGGER_OWNER_EMAILS="<your-work-email>"` in `.env` —
+> your instance then acts only on *your* `@openswe` comments, so one mention
+> triggers exactly one backend. Every operator instance must be scoped; an
+> unscoped instance accepts everyone's triggers and reintroduces duplicates.
+> Trade-off: if your laptop is asleep, your trigger doesn't run — no other
+> instance picks it up.
 
 **Verify:** `ls ~/.cloudflared/cert.pem ~/.cloudflared/*.json`
 
-### B5. Linear webhooks (once per workspace, not per machine)
+### B5. Linear webhooks (once per hostname)
 
-Already exist for all public teams + each private team. Only needed for a new
-private team or a new workspace: `speedbay/create_linear_webhook.py` with a
-temporary admin key (FORK.md § Linear trigger — UI-created webhooks never
-verify; API-created ones with our `LINEAR_WEBHOOK_SECRET` do).
+The existing webhooks point at the first operator's hostname. Each additional
+operator registers their own set (same teams, **their** hostname) with
+`speedbay/create_linear_webhook.py` and a temporary admin key (FORK.md
+§ Linear trigger — UI-created webhooks never verify; API-created ones with
+our shared `LINEAR_WEBHOOK_SECRET` do). Only do this **after** B4's owner
+scope is set.
 
-**Verify:** covered by the end-to-end smoke run in B8.
+**Verify:** covered by the end-to-end smoke run in B8 — and confirm a
+teammate's mention does *not* start a run on your instance (log line:
+"comment author outside this instance's owner scope").
 
 ### B6. Boot
 
