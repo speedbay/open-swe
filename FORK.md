@@ -344,6 +344,7 @@ The in-tree dashboard is the forge-dash replacement — we write no custom UI.
 Backend must be LIVE (above); then:
 
 ```bash
+corepack enable pnpm                  # once per machine (pnpm ships via Node's corepack)
 cd ui && pnpm install && pnpm dev     # http://localhost:3000 (Vite, port in ui/package.json)
 ```
 
@@ -374,6 +375,24 @@ as a callback URL (§3b) — App settings, not env. Restart both processes
 (`speedbay/openswe stop && start`; re-run `pnpm dev`) after changing either
 env file. When a login fails with a generic JSON error, the real exception is
 in `/tmp/openswe-backend.log`.
+
+### User mappings without Slack OAuth
+
+Admin → User mappings is **remove-only**; mappings are normally created when a
+user connects Slack from Profile Settings. This deployment has no `SLACK_*`
+env configured, so that path is disabled — seed mappings directly into the
+LangGraph Store instead (same record shape the Slack flow writes), then
+restart the backend so its in-process mapping cache reloads:
+
+```python
+# .venv/bin/python — one record per dev
+from langgraph_sdk import get_client
+await get_client(url="http://localhost:2024").store.put_item(
+    ["user_mappings"], "<github-login>",
+    {"github_login": "<github-login>", "work_email": "<email>",
+     "slack_user_id": None, "source": "slack_oauth", "status": "active",
+     "created_at": "<iso-now>", "updated_at": "<iso-now>"})
+```
 
 Login is the direct GitHub OAuth (`GITHUB_APP_CLIENT_ID/SECRET`), gated by
 `ALLOWED_GITHUB_ORGS="speedbay"` — non-org accounts are rejected server-side,
