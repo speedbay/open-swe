@@ -15,6 +15,7 @@ import json
 import pathlib
 
 import pytest
+from starlette.types import Message
 
 from agent.speedbay import linear_guard as guard
 
@@ -143,3 +144,144 @@ def test_scoped_instance_drops_missing_email_fail_closed(
     assert guard.is_foreign_comment(_comment_from(None)) is True
     assert guard.is_foreign_comment(_comment_from("")) is True
     assert guard.is_foreign_comment({}) is True
+
+
+# --- duplicate-delivery dedup (OPE-56) -----------------------------------------
+
+COMMENT_ID = PAYLOAD["data"]["id"]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_seen_comments():
+    """The dedup set lives for the process; tests need isolation."""
+    guard._seen_comment_ids.clear()
+    yield
+    guard._seen_comment_ids.clear()
+
+
+@pytest.fixture
+def route_call(monkeypatch: pytest.MonkeyPatch):
+    """One delivery through linear_webhook with everything external stubbed."""
+    from agent.webhooks import linear_routes
+
+    profile_repo = None
+
+    async def _none(*_args, **_kwargs):
+        return None
+
+    async def _login(*_args, **_kwargs):
+        return "cbass-speedbay"
+
+    async def _profile_repo(*_args, **_kwargs):
+        return profile_repo
+
+    monkeypatch.setattr(linear_routes.common, "verify_linear_signature", lambda *_args: True)
+    monkeypatch.setattr(linear_routes.common, "fetch_linear_issue_details", _none)
+    monkeypatch.setattr(linear_routes.speedbay_linear_guard, "is_self_comment", _none)
+    monkeypatch.setattr(
+        linear_routes.common, "extract_repo_from_text", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(linear_routes.common, "resolve_login_from_email_async", _login)
+    monkeypatch.setattr(linear_routes.common, "get_profile_default_repo", _profile_repo)
+    monkeypatch.setattr(
+        linear_routes.common, "get_repo_config_from_team_mapping", lambda *_args: None
+    )
+    monkeypatch.setattr(linear_routes.common, "get_team_default_repo", _none)
+    monkeypatch.setattr(linear_routes.common, "_is_repo_allowed", lambda *_args: True)
+
+    def _call(payload: dict, bg_tasks, *, resolve_repo: bool = True):
+        nonlocal profile_repo
+        profile_repo = {"owner": "speedbay", "name": "warehouse"} if resolve_repo else None
+
+        async def _receive() -> Message:
+            return {"type": "http.request", "body": json.dumps(payload).encode()}
+
+        request = linear_routes.common.Request(
+            {"type": "http", "headers": [(b"linear-signature", b"valid")]},
+            _receive,
+        )
+        return asyncio.run(linear_routes.linear_webhook(request, bg_tasks))
+
+    return _call
+
+
+class _CapturingBackgroundTasks:
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def add_task(self, fn, *args, **kwargs) -> None:
+        self.calls.append((fn, args))
+
+
+def _triggering_payload(comment_id: str | None) -> dict:
+    payload = copy.deepcopy(PAYLOAD)
+    payload["data"]["body"] = "@openswe implement"
+    if comment_id is None:
+        del payload["data"]["id"]
+    else:
+        payload["data"]["id"] = comment_id
+    return payload
+
+
+def test_guard_same_comment_id_twice_second_is_duplicate() -> None:
+    assert guard.is_duplicate_comment(PAYLOAD) is False
+    assert guard.is_duplicate_comment(copy.deepcopy(PAYLOAD)) is True
+
+
+def test_guard_distinct_comment_ids_both_pass() -> None:
+    other = _triggering_payload("bbbb-cccc-dddd-eeee")
+    assert guard.is_duplicate_comment(PAYLOAD) is False
+    assert guard.is_duplicate_comment(other) is False
+
+
+def test_guard_missing_comment_id_fails_open() -> None:
+    assert guard.is_duplicate_comment({}) is False
+    assert guard.is_duplicate_comment({"data": {}}) is False
+    assert guard.is_duplicate_comment({"data": {"id": "  "}}) is False
+
+
+def test_guard_bounded_fifo_eviction() -> None:
+    for i in range(513):
+        assert guard.is_duplicate_comment({"data": {"id": f"c-{i}"}}) is False
+    assert guard.is_duplicate_comment({"data": {"id": "c-0"}}) is False
+    assert guard.is_duplicate_comment({"data": {"id": "c-512"}}) is True
+
+
+def test_route_replaying_captured_payload_dispatches_exactly_once(route_call) -> None:
+    """AC: the same comment delivered twice (once per covering webhook) starts
+    exactly one run — no interrupted twin."""
+    bg = _CapturingBackgroundTasks()
+    first = route_call(_triggering_payload(COMMENT_ID), bg)
+    second = route_call(_triggering_payload(COMMENT_ID), bg)
+    assert first["status"] == "accepted"
+    assert second["status"] == "ignored"
+    assert "Duplicate" in second["reason"]
+    assert len(bg.calls) == 1
+
+
+def test_route_distinct_comments_on_same_issue_both_dispatch(route_call) -> None:
+    bg = _CapturingBackgroundTasks()
+    first = route_call(_triggering_payload(COMMENT_ID), bg)
+    second = route_call(_triggering_payload("bbbb-cccc-dddd-eeee"), bg)
+    assert first["status"] == "accepted"
+    assert second["status"] == "accepted"
+    assert len(bg.calls) == 2
+
+
+def test_route_ignored_delivery_does_not_poison_retry(route_call) -> None:
+    bg = _CapturingBackgroundTasks()
+    payload = _triggering_payload(COMMENT_ID)
+    first = route_call(payload, bg, resolve_repo=False)
+    second = route_call(payload, bg)
+    assert first == {"status": "ignored", "reason": "No default repository configured"}
+    assert second["status"] == "accepted"
+    assert len(bg.calls) == 1
+
+
+def test_route_missing_comment_id_still_dispatches(route_call) -> None:
+    bg = _CapturingBackgroundTasks()
+    first = route_call(_triggering_payload(None), bg)
+    second = route_call(_triggering_payload(None), bg)
+    assert first["status"] == "accepted"
+    assert second["status"] == "accepted"
+    assert len(bg.calls) == 2
