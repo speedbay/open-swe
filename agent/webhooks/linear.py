@@ -11,6 +11,24 @@ from langchain_core.messages.content import create_text_block
 
 from . import common
 
+# SPEEDBAY DEVIATION (OPE-51): Linear-trigger acceptance-criteria contract.
+# The issue description embeds the ACs but never instructs the agent to satisfy
+# or evidence them; this contract makes every agent-opened PR map criteria to
+# evidence so post-merge verification (agent/speedbay/resources/verify_prompt.md)
+# can re-check declared commands and diff evidence directly. Lives in this
+# upstream-owned file because the prompt is assembled inline; kept as a constant
+# to minimize the deviation surface.
+ACCEPTANCE_CRITERIA_CONTRACT = (
+    "Acceptance criteria contract:\n"
+    "1. Address every acceptance criterion in the issue; do not open a PR while "
+    "a criterion is knowingly unmet — say so on the ticket instead.\n"
+    "2. The PR body must cite evidence per criterion (file/function for "
+    "diff-provable ones; the test name and command for behavior ones) so "
+    "post-merge verification can map criteria to evidence directly.\n"
+    "3. Runnable verification commands go in the PR body's verification section; "
+    "the verifier re-runs declared commands at the merge SHA."
+)
+
 
 async def process_linear_issue(  # noqa: PLR0912, PLR0915
     issue_data: dict[str, Any], repo_config: dict[str, str]
@@ -167,7 +185,8 @@ async def process_linear_issue(  # noqa: PLR0912, PLR0915
         "this Linear ticket and follows this repository's PR conventions for the title, body, "
         "release note, and/or changelog. Inspect AGENTS.md, PR templates, "
         ".changelog/README.md, and nearby docs before choosing the PR title/body format. "
-        f"When you're done, commit and push your changes. {tag_instruction}"
+        f"When you're done, commit and push your changes. {tag_instruction}\n\n"
+        f"{ACCEPTANCE_CRITERIA_CONTRACT}"
     )
     content_blocks: list[dict[str, Any]] = [cast(dict[str, Any], create_text_block(prompt))]
 
