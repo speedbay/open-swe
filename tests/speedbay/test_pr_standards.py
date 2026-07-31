@@ -92,7 +92,7 @@ def _wire(
     async def fake_get_backend(thread_id: str):
         return backend
 
-    configurable: dict[str, Any] = {"thread_id": "t-1"}
+    configurable: dict[str, Any] = {"thread_id": "t-1", "repo": {"name": "wh"}}
     if issue is not None:
         configurable["linear_issue"] = {"identifier": issue}
     monkeypatch.setattr(fg, "get_sandbox_backend", fake_get_backend)
@@ -112,7 +112,7 @@ async def _fail_handler(request: Any) -> Any:  # pragma: no cover - must not run
 
 
 def _numstat(rows: str) -> FakeBackend:
-    return FakeBackend({"git diff --numstat": FakeResponse(output=rows)})
+    return FakeBackend({"diff --numstat": FakeResponse(output=rows)})
 
 
 def _payload(result: Any) -> dict[str, Any]:
@@ -164,7 +164,9 @@ def test_compliant_diff_and_hygiene_open_normally(monkeypatch) -> None:
     _wire(monkeypatch, backend)
     result = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _pass_handler))
     assert result == "pr-opened"
-    assert backend.commands[0].endswith(f"git diff --numstat origin/main...{BRANCH}")
+    diff = next(c for c in backend.commands if "diff --numstat" in c)
+    assert diff.startswith("git -C /workspace/wh diff --numstat")
+    assert diff.endswith(f"origin/main...{BRANCH}")
 
 
 def test_gate_passing_pr_is_forced_ready_for_review(monkeypatch) -> None:
@@ -219,7 +221,7 @@ def test_hygiene_violations_blocked_with_rule_names(monkeypatch) -> None:
 
 def test_truncated_numstat_blocks_as_oversized(monkeypatch) -> None:
     backend = FakeBackend(
-        {"git diff --numstat": FakeResponse(output="1\t0\tagent/api.py\n", truncated=True)}
+        {"diff --numstat": FakeResponse(output="1\t0\tagent/api.py\n", truncated=True)}
     )
     _wire(monkeypatch, backend)
     payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler)))
@@ -263,14 +265,31 @@ def test_passing_gate_resets_the_round_counter(monkeypatch) -> None:
 
 
 def test_fails_open_when_diff_unavailable(monkeypatch, caplog) -> None:
-    backend = FakeBackend(
-        {"git diff --numstat": FakeResponse(output="fatal: bad ref", exit_code=128)}
-    )
+    backend = FakeBackend({"diff --numstat": FakeResponse(output="fatal: bad ref", exit_code=128)})
     _wire(monkeypatch, backend)
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("ERROR"):
         result = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _pass_handler))
     assert result == "pr-opened"
     assert "could not diff" in caplog.text
+
+
+def test_fails_open_loudly_when_no_repo_clone_found(monkeypatch, caplog) -> None:
+    """The pre-OPE-59 production outage shape: no clone at the diffed path.
+
+    Resolution failure must pass fail-open (OPE-9) but at error level — two
+    silent warnings were the only trace of a fully disabled gate.
+    """
+    backend = FakeBackend(
+        {
+            "rev-parse": FakeResponse(output="", exit_code=128),
+            "ls -d": FakeResponse(output="", exit_code=1),
+        }
+    )
+    _wire(monkeypatch, backend)
+    with caplog.at_level("ERROR"):
+        result = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _pass_handler))
+    assert result == "pr-opened"
+    assert "no repo clone found" in caplog.text
 
 
 def test_fails_open_on_infrastructure_error(monkeypatch, caplog) -> None:
@@ -307,9 +326,14 @@ def test_integration_oversized_blocks_and_compliant_passes(monkeypatch) -> None:
 
     sandbox = create_docker_sandbox()
     try:
+        # Real clone layout (OPE-59): the repo lives at /workspace/<name>, the
+        # way `gh repo clone` leaves it — /workspace itself is not a git repo.
+        # Seeding at /workspace root is exactly the layout that masked the
+        # production fail-open outage; this test must never use it again.
         _run(
             sandbox.aexecute(
-                "cd /workspace && git init -q -b main && git config user.email t@t "
+                "mkdir -p /workspace/wh && cd /workspace/wh "
+                "&& git init -q -b main && git config user.email t@t "
                 "&& git config user.name t && echo base > README.md "
                 "&& git add . && git commit -qm base -m 'Closes T-1' "
                 f"&& git checkout -q -b {BRANCH} "
@@ -324,7 +348,13 @@ def test_integration_oversized_blocks_and_compliant_passes(monkeypatch) -> None:
         monkeypatch.setattr(
             fg,
             "get_config",
-            lambda: {"configurable": {"thread_id": "t-1", "linear_issue": {"identifier": ISSUE}}},
+            lambda: {
+                "configurable": {
+                    "thread_id": "t-1",
+                    "repo": {"name": "wh"},
+                    "linear_issue": {"identifier": ISSUE},
+                }
+            },
         )
 
         blocked = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler))
@@ -332,7 +362,7 @@ def test_integration_oversized_blocks_and_compliant_passes(monkeypatch) -> None:
 
         _run(
             sandbox.aexecute(
-                "cd /workspace && git checkout -q main && git checkout -q -b ope-8-small "
+                "cd /workspace/wh && git checkout -q main && git checkout -q -b ope-8-small "
                 "&& echo tweak >> README.md && git add . && git commit -qm small -m 'Closes T-1'"
             )
         )

@@ -52,6 +52,11 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+# Resolved repo clone under /workspace (OPE-59): the agent clones into
+# /workspace/<repo>, so gates never run at /workspace itself.
+REPO_DIR = "/workspace/wh"
+
+
 def _request(tool: str = "open_pull_request", base: str = "main", head: str = "") -> Any:
     """Duck-typed ToolCallRequest double (typed Any for the middleware calls)."""
 
@@ -104,7 +109,7 @@ def test_every_configured_project_gate_fires() -> None:
             f"{project}/{gate.paths[0].replace('**', 'x')}" for gate in gates if gate.paths
         ]
         assert set(touched_projects(paths)) == {project}
-        assert _run(run_quality_gates(backend, paths)) is None
+        assert _run(run_quality_gates(backend, paths, REPO_DIR)) is None
         for gate in gates:
             assert gate.name and gate.command
             assert any(gate.command in issued for issued in backend.commands), (
@@ -117,28 +122,29 @@ def test_every_configured_project_gate_fires() -> None:
 
 
 def test_commands_run_from_project_root_and_pass(demo_gates) -> None:
+    """Gate commands run inside <repo_dir>/<project>, not /workspace/<project>."""
     backend = FakeBackend()
-    failure = _run(run_quality_gates(backend, ["demo/app/main.py"]))
+    failure = _run(run_quality_gates(backend, ["demo/app/main.py"], REPO_DIR))
     assert failure is None
     assert backend.commands == [
-        "cd /workspace/demo && set -o pipefail && ( run-lint ) 2>&1 | tail -c 2000",
-        "cd /workspace/demo && set -o pipefail && ( run-scoped ) 2>&1 | tail -c 2000",
+        "cd /workspace/wh/demo && set -o pipefail && ( run-lint ) 2>&1 | tail -c 2000",
+        "cd /workspace/wh/demo && set -o pipefail && ( run-scoped ) 2>&1 | tail -c 2000",
     ]
 
 
 def test_path_filtered_gate_skipped_when_no_match(demo_gates) -> None:
     backend = FakeBackend()
-    failure = _run(run_quality_gates(backend, ["demo/docs/readme.md"]))
+    failure = _run(run_quality_gates(backend, ["demo/docs/readme.md"], REPO_DIR))
     assert failure is None
     assert backend.commands == [
-        "cd /workspace/demo && set -o pipefail && ( run-lint ) 2>&1 | tail -c 2000"
+        "cd /workspace/wh/demo && set -o pipefail && ( run-lint ) 2>&1 | tail -c 2000"
     ]
 
 
 def test_failing_command_blocks_with_name_and_bounded_tail(demo_gates) -> None:
     long_output = "x" * 5000 + "TAIL-MARKER"
     backend = FakeBackend({"run-lint": FakeResponse(output=long_output, exit_code=1)})
-    failure = _run(run_quality_gates(backend, ["demo/app/main.py"]))
+    failure = _run(run_quality_gates(backend, ["demo/app/main.py"], REPO_DIR))
     assert failure is not None
     assert failure.command_name == "demo lint"
     assert failure.kind == "failure"
@@ -154,26 +160,26 @@ def test_precondition_failure_distinguished_by_exit_127(demo_gates) -> None:
     backend = FakeBackend(
         {"run-lint": FakeResponse(output="sh: run-lint: not found", exit_code=127)}
     )
-    failure = _run(run_quality_gates(backend, ["demo/a.py"]))
+    failure = _run(run_quality_gates(backend, ["demo/a.py"], REPO_DIR))
     assert failure is not None and failure.kind == "precondition"
 
 
 def test_precondition_failure_distinguished_by_marker(demo_gates) -> None:
     backend = FakeBackend({"run-lint": FakeResponse(output="bash: uv: not found", exit_code=1)})
-    failure = _run(run_quality_gates(backend, ["demo/a.py"]))
+    failure = _run(run_quality_gates(backend, ["demo/a.py"], REPO_DIR))
     assert failure is not None and failure.kind == "precondition"
 
 
 def test_timeout_exit_code_classified(demo_gates) -> None:
     backend = FakeBackend({"run-lint": FakeResponse(output="", exit_code=124)})
-    failure = _run(run_quality_gates(backend, ["demo/a.py"]))
+    failure = _run(run_quality_gates(backend, ["demo/a.py"], REPO_DIR))
     assert failure is not None and failure.kind == "timeout"
 
 
 def test_unconfigured_project_passes_with_notice(demo_gates, caplog) -> None:
     backend = FakeBackend()
     with caplog.at_level("INFO"):
-        failure = _run(run_quality_gates(backend, ["mystery/a.py"]))
+        failure = _run(run_quality_gates(backend, ["mystery/a.py"], REPO_DIR))
     assert failure is None
     assert backend.commands == []
     assert "no configured commands" in caplog.text
@@ -187,7 +193,11 @@ def _wire(monkeypatch: pytest.MonkeyPatch, backend: FakeBackend) -> None:
         return backend
 
     monkeypatch.setattr(qg, "get_sandbox_backend", fake_get_backend)
-    monkeypatch.setattr(qg, "get_config", lambda: {"configurable": {"thread_id": "t-1"}})
+    monkeypatch.setattr(
+        qg,
+        "get_config",
+        lambda: {"configurable": {"thread_id": "t-1", "repo": {"name": "wh"}}},
+    )
 
 
 def test_middleware_ignores_other_tools(demo_gates, monkeypatch) -> None:
@@ -205,7 +215,7 @@ def test_middleware_ignores_other_tools(demo_gates, monkeypatch) -> None:
 def test_middleware_blocks_pr_on_gate_failure(demo_gates, monkeypatch) -> None:
     backend = FakeBackend(
         {
-            "git diff --name-only": FakeResponse(output="demo/app/main.py\n"),
+            "diff --name-only": FakeResponse(output="demo/app/main.py\n"),
             "run-lint": FakeResponse(output="1 failed", exit_code=1),
         }
     )
@@ -225,7 +235,7 @@ def test_middleware_blocks_pr_on_gate_failure(demo_gates, monkeypatch) -> None:
 
 
 def test_middleware_passes_pr_when_gates_green(demo_gates, monkeypatch) -> None:
-    backend = FakeBackend({"git diff --name-only": FakeResponse(output="demo/app/main.py\n")})
+    backend = FakeBackend({"diff --name-only": FakeResponse(output="demo/app/main.py\n")})
     _wire(monkeypatch, backend)
 
     async def handler(request: Any) -> Any:
@@ -236,7 +246,7 @@ def test_middleware_passes_pr_when_gates_green(demo_gates, monkeypatch) -> None:
 
 def test_middleware_diffs_requested_head_branch(demo_gates, monkeypatch) -> None:
     """The gate diffs the requested PR head ref, not the sandbox's HEAD."""
-    backend = FakeBackend({"git diff --name-only": FakeResponse(output="")})
+    backend = FakeBackend({"diff --name-only": FakeResponse(output="")})
     _wire(monkeypatch, backend)
 
     async def handler(request: Any) -> Any:
@@ -244,7 +254,10 @@ def test_middleware_diffs_requested_head_branch(demo_gates, monkeypatch) -> None
 
     request = _request(head="speedbay:feature-x")
     assert _run(QualityGatesMiddleware().awrap_tool_call(request, handler)) == "pr-opened"
-    assert backend.commands[0].endswith("git diff --name-only origin/main...feature-x")
+    # commands[0] is the resolve_repo_dir probe; the diff targets the clone.
+    diff = next(c for c in backend.commands if "diff --name-only" in c)
+    assert diff.startswith("git -C /workspace/wh diff --name-only")
+    assert diff.endswith("origin/main...feature-x")
 
 
 def test_diff_refs_are_shell_quoted_against_hostile_branch_names(demo_gates, monkeypatch) -> None:
@@ -253,7 +266,7 @@ def test_diff_refs_are_shell_quoted_against_hostile_branch_names(demo_gates, mon
     An unquoted ``feature;true`` would make the shell run ``true`` after the
     failed diff — exit 0 with no paths, silently skipping every gate.
     """
-    backend = FakeBackend({"git diff --name-only": FakeResponse(output="")})
+    backend = FakeBackend({"diff --name-only": FakeResponse(output="")})
     _wire(monkeypatch, backend)
 
     async def handler(request: Any) -> Any:
@@ -261,24 +274,74 @@ def test_diff_refs_are_shell_quoted_against_hostile_branch_names(demo_gates, mon
 
     request = _request(base="main;rm -rf /", head="feature;true")
     assert _run(QualityGatesMiddleware().awrap_tool_call(request, handler)) == "pr-opened"
-    assert backend.commands[0].endswith(
-        "git diff --name-only 'origin/main;rm -rf /'...'feature;true'"
-    )
+    diff = next(c for c in backend.commands if "diff --name-only" in c)
+    assert diff.endswith("diff --name-only 'origin/main;rm -rf /'...'feature;true'")
 
 
 def test_middleware_fails_open_when_diff_unavailable(demo_gates, monkeypatch, caplog) -> None:
     backend = FakeBackend(
-        {"git diff --name-only": FakeResponse(output="fatal: bad ref", exit_code=128)}
+        {"diff --name-only": FakeResponse(output="fatal: bad ref", exit_code=128)}
     )
     _wire(monkeypatch, backend)
 
     async def handler(request: Any) -> Any:
         return "pr-opened"
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("ERROR"):
         result = _run(QualityGatesMiddleware().awrap_tool_call(_request(), handler))
     assert result == "pr-opened"
     assert "could not diff" in caplog.text
+
+
+# --- repo-dir resolution (OPE-59) --------------------------------------------
+
+
+def test_resolve_repo_dir_prefers_declared_name() -> None:
+    """The issue-declared repo (configurable['repo'], OPE-49) wins outright."""
+    backend = FakeBackend()
+    resolved = _run(qg.resolve_repo_dir(backend, {"repo": {"name": "warehouse"}}))
+    assert resolved == "/workspace/warehouse"
+    assert backend.commands == ["git -C /workspace/warehouse rev-parse --is-inside-work-tree"]
+
+
+def test_resolve_repo_dir_falls_back_to_single_clone_discovery() -> None:
+    """No declaration → exactly one /workspace/*/.git resolves to its parent."""
+    backend = FakeBackend({"ls -d": FakeResponse(output="/workspace/only/.git\n")})
+    assert _run(qg.resolve_repo_dir(backend, {})) == "/workspace/only"
+
+
+def test_resolve_repo_dir_none_when_ambiguous_or_empty() -> None:
+    """Zero or multiple clones cannot be guessed — resolution reports None."""
+    two = FakeBackend({"ls -d": FakeResponse(output="/workspace/a/.git\n/workspace/b/.git\n")})
+    assert _run(qg.resolve_repo_dir(two, {})) is None
+    none = FakeBackend({"ls -d": FakeResponse(output="", exit_code=1)})
+    assert _run(qg.resolve_repo_dir(none, {})) is None
+
+
+def test_resolve_repo_dir_quotes_hostile_declared_name() -> None:
+    """A metacharacter repo name cannot break out of the probe command."""
+    backend = FakeBackend({"rev-parse": FakeResponse(output="", exit_code=128)})
+    _run(qg.resolve_repo_dir(backend, {"repo": {"name": "x;rm -rf /"}}))
+    assert backend.commands[0].startswith("git -C '/workspace/x;rm -rf /' rev-parse")
+
+
+def test_middleware_fails_open_when_no_repo_clone_found(demo_gates, monkeypatch, caplog) -> None:
+    """Unresolvable clone → fail-open pass, but loudly (error level, OPE-59)."""
+    backend = FakeBackend(
+        {
+            "rev-parse": FakeResponse(output="", exit_code=128),
+            "ls -d": FakeResponse(output="", exit_code=1),
+        }
+    )
+    _wire(monkeypatch, backend)
+
+    async def handler(request: Any) -> Any:
+        return "pr-opened"
+
+    with caplog.at_level("ERROR"):
+        result = _run(QualityGatesMiddleware().awrap_tool_call(_request(), handler))
+    assert result == "pr-opened"
+    assert "no repo clone found" in caplog.text
 
 
 def test_middleware_fails_open_on_infrastructure_error(demo_gates, monkeypatch, caplog) -> None:
@@ -319,16 +382,20 @@ def test_integration_gate_failure_and_pass_through_real_container(monkeypatch) -
 
     sandbox = create_docker_sandbox()
     try:
-        _run(sandbox.aexecute("mkdir -p /workspace/demo"))
+        # Real clone layout (OPE-59): the repo is a git worktree under
+        # /workspace/<name>, with the project directory inside the clone.
+        _run(sandbox.aexecute("mkdir -p /workspace/wh/demo && git -C /workspace/wh init -q"))
+        resolved = _run(qg.resolve_repo_dir(sandbox, {"repo": {"name": "wh"}}))
+        assert resolved == "/workspace/wh"
         monkeypatch.setattr(
             qg,
             "PROJECT_QUALITY_GATES",
             {"demo": (GateCommand("seeded check", "test -f marker.txt"),)},
         )
-        failing = _run(run_quality_gates(sandbox, ["demo/x.py"]))
+        failing = _run(run_quality_gates(sandbox, ["demo/x.py"], resolved))
         assert failing is not None and failing.command_name == "seeded check"
 
-        _run(sandbox.aexecute("touch /workspace/demo/marker.txt"))
-        assert _run(run_quality_gates(sandbox, ["demo/x.py"])) is None
+        _run(sandbox.aexecute("touch /workspace/wh/demo/marker.txt"))
+        assert _run(run_quality_gates(sandbox, ["demo/x.py"], resolved)) is None
     finally:
         subprocess.run(["docker", "rm", "-f", sandbox.id], capture_output=True)
