@@ -8,11 +8,16 @@ import re
 _DEFAULT_REPO_OWNER = os.environ.get("DEFAULT_REPO_OWNER", "langchain-ai")
 
 
-def extract_repo_from_text(text: str, default_owner: str | None = None) -> dict[str, str] | None:
-    """Extract owner/name repo config from text containing repo: syntax or GitHub URLs.
+def extract_repo_from_text(
+    text: str,
+    default_owner: str | None = None,
+    *,
+    allow_github_url: bool = True,
+) -> dict[str, str] | None:
+    """Extract owner/name repo config from text containing repo syntax or GitHub URLs.
 
     Checks for explicit ``repo:owner/name`` or ``repo owner/name`` first, then
-    falls back to GitHub URL extraction.
+    optionally falls back to GitHub URL extraction.
 
     Returns:
         A dict with ``owner`` and ``name`` keys, or ``None`` if no repo found.
@@ -32,7 +37,7 @@ def extract_repo_from_text(text: str, default_owner: str | None = None) -> dict[
                 owner = default_owner
                 name = value
 
-    if not owner or not name:
+    if allow_github_url and (not owner or not name):
         github_match = re.search(r"github\.com/([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)", text)
         if github_match:
             owner, name = github_match.group(1).split("/", 1)

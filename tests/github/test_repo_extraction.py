@@ -140,6 +140,111 @@ class TestLinearWebhookRepoOverride:
             assert repo_config == {"owner": "custom-org", "name": "custom-repo"}
 
     @pytest.mark.asyncio
+    async def test_comment_repo_beats_issue_body_declaration(self) -> None:
+        # OPE-49 precedence: comment text > issue body > profile default >
+        # team mapping > team default.
+        from agent.webhooks.linear_routes import linear_webhook
+
+        payload = {
+            "type": "Comment",
+            "action": "create",
+            "data": {
+                "id": "comment-123",
+                "body": "@openswe please fix this repo:custom-org/custom-repo",
+                "issue": {
+                    "id": "issue-456",
+                    "title": "Test issue",
+                },
+                "user": {"id": "user-1", "name": "Test User", "email": "test@test.com"},
+            },
+        }
+
+        with (
+            patch("agent.webhooks.common.verify_linear_signature", return_value=True),
+            patch(
+                "agent.webhooks.common.fetch_linear_issue_details",
+                new_callable=AsyncMock,
+                return_value={
+                    "id": "issue-456",
+                    "title": "Test issue",
+                    "identifier": "TEST-1",
+                    "url": "https://linear.app/test/issue/TEST-1",
+                    "description": "Routes to repo:body-org/body-repo",
+                    "team": {"id": "t1", "name": "Some Team", "key": "ST"},
+                    "project": {"id": "p1", "name": "Some Project"},
+                    "comments": {"nodes": []},
+                },
+            ),
+            patch("agent.webhooks.common._is_repo_allowed", return_value=True),
+            patch("agent.webhooks.common.BackgroundTasks"),
+        ):
+            mock_request = AsyncMock()
+            mock_request.body.return_value = json.dumps(payload).encode()
+            mock_request.headers = {"Linear-Signature": "valid"}
+
+            bg_tasks = AsyncMock()
+            result = await linear_webhook(mock_request, bg_tasks)
+
+            assert result["status"] == "accepted"
+            assert "custom-org/custom-repo" in result["message"]
+
+            call_args = bg_tasks.add_task.call_args
+            repo_config = call_args[0][2]
+            assert repo_config == {"owner": "custom-org", "name": "custom-repo"}
+
+    @pytest.mark.asyncio
+    async def test_issue_body_declaration_beats_profile_and_team_mapping(self) -> None:
+        # OPE-49: with no comment-text override, the issue body's repo:
+        # declaration wins over profile default and team mapping.
+        from agent.webhooks.linear_routes import linear_webhook
+
+        payload = {
+            "type": "Comment",
+            "action": "create",
+            "data": {
+                "id": "comment-123",
+                "body": "@openswe please fix this bug",
+                "issue": {
+                    "id": "issue-456",
+                    "title": "Test issue",
+                },
+                "user": {"id": "user-1", "name": "Test User", "email": "test@test.com"},
+            },
+        }
+
+        with (
+            patch("agent.webhooks.common.verify_linear_signature", return_value=True),
+            patch(
+                "agent.webhooks.common.fetch_linear_issue_details",
+                new_callable=AsyncMock,
+                return_value={
+                    "id": "issue-456",
+                    "title": "Test issue",
+                    "identifier": "TEST-1",
+                    "url": "https://linear.app/test/issue/TEST-1",
+                    "description": "Routes to repo:body-org/body-repo",
+                    "team": {"id": "t1", "name": "Open SWE", "key": "OS"},
+                    "project": None,
+                    "comments": {"nodes": []},
+                },
+            ),
+            patch("agent.webhooks.common._is_repo_allowed", return_value=True),
+        ):
+            mock_request = AsyncMock()
+            mock_request.body.return_value = json.dumps(payload).encode()
+            mock_request.headers = {"Linear-Signature": "valid"}
+
+            bg_tasks = AsyncMock()
+            result = await linear_webhook(mock_request, bg_tasks)
+
+            assert result["status"] == "accepted"
+            assert "body-org/body-repo" in result["message"]
+
+            call_args = bg_tasks.add_task.call_args
+            repo_config = call_args[0][2]
+            assert repo_config == {"owner": "body-org", "name": "body-repo"}
+
+    @pytest.mark.asyncio
     async def test_falls_back_to_team_mapping_when_no_repo_in_comment(self) -> None:
         from agent.webhooks.linear_routes import linear_webhook
 
@@ -167,6 +272,10 @@ class TestLinearWebhookRepoOverride:
                     "title": "Test issue",
                     "identifier": "TEST-1",
                     "url": "https://linear.app/test/issue/TEST-1",
+                    "description": (
+                        "Related upstream issue: "
+                        "https://github.com/langchain-ai/open-swe/issues/123"
+                    ),
                     "team": {"id": "t1", "name": "Open SWE", "key": "OS"},
                     "project": None,
                     "comments": {"nodes": []},
@@ -182,8 +291,9 @@ class TestLinearWebhookRepoOverride:
             result = await linear_webhook(mock_request, bg_tasks)
 
             assert result["status"] == "accepted"
-            assert "langchain-ai/open-swe" in result["message"]
+            # OPE-45 maps team "Open SWE" to the speedbay fork.
+            assert "speedbay/open-swe" in result["message"]
 
             call_args = bg_tasks.add_task.call_args
             repo_config = call_args[0][2]
-            assert repo_config == {"owner": "langchain-ai", "name": "open-swe"}
+            assert repo_config == {"owner": "speedbay", "name": "open-swe"}

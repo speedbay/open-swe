@@ -101,6 +101,9 @@ async def linear_webhook(  # noqa: PLR0911, PLR0912, PLR0915
         common.logger.warning("Failed to fetch full issue details, using webhook data")
         full_issue = issue
 
+    # Repo resolution precedence (OPE-49): comment-text ``repo:owner/name``
+    # override > issue-body declaration > profile default > team/project
+    # mapping > team default. The allowlist below gates whichever wins.
     repo_config = common.extract_repo_from_text(
         comment_body, default_owner=common.DEFAULT_REPO_OWNER
     )
@@ -112,6 +115,17 @@ async def linear_webhook(  # noqa: PLR0911, PLR0912, PLR0915
             repo_config["name"],
         )
     else:
+        issue_description = full_issue.get("description") or ""
+        if issue_description:
+            repo_config = common.extract_repo_from_text(issue_description, allow_github_url=False)
+        if repo_config:
+            common.logger.debug(
+                "Using repo from issue body: %s/%s",
+                repo_config["owner"],
+                repo_config["name"],
+            )
+
+    if not repo_config:
         comment_user_email = (data.get("user") or {}).get("email")
         try:
             profile_repo = await common.get_profile_default_repo(

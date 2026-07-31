@@ -324,6 +324,53 @@ def test_dispatch_marks_unresolved_state_ids_in_prompt():
     assert "could not be resolved server-side" in captured["content"]
 
 
+def test_dispatch_honors_body_declared_repo():
+    # OPE-49: an explicit repo:owner/name in the issue body beats the team
+    # mapping — verify dispatches carry no comment, so the per-comment
+    # override can never apply to them.
+    issue = _fixture_issue()
+    full_issue = copy.deepcopy(issue)
+    full_issue["description"] = "Verify against repo:speedbay/open-swe please"
+    captured = _run_dispatch(
+        issue,
+        full_issue=full_issue,
+        team_repo={"owner": "speedbay", "name": "warehouse"},
+    )
+    assert captured["dispatched"] is True
+    assert captured["configurable"]["repo"] == {"owner": "speedbay", "name": "open-swe"}
+    assert "## Repository: speedbay/open-swe" in captured["content"]
+
+
+def test_dispatch_body_without_declaration_preserves_team_mapping():
+    # No repo: declaration in the body routes exactly as before.
+    issue = _fixture_issue()
+    full_issue = copy.deepcopy(issue)
+    full_issue["description"] = (
+        "An ordinary description linking https://github.com/upstream/dependency/issues/1."
+    )
+    captured = _run_dispatch(
+        issue,
+        full_issue=full_issue,
+        team_repo={"owner": "speedbay", "name": "warehouse"},
+    )
+    assert captured["configurable"]["repo"] == {"owner": "speedbay", "name": "warehouse"}
+
+
+def test_dispatch_drops_disallowed_body_declared_repo():
+    # The allowlist still gates body-declared repos.
+    issue = _fixture_issue()
+    full_issue = copy.deepcopy(issue)
+    full_issue["description"] = "Verify against repo:evil/repo"
+    captured = _run_dispatch(
+        issue,
+        full_issue=full_issue,
+        team_repo={"owner": "speedbay", "name": "warehouse"},
+        allowed=False,
+    )
+    assert "thread_id" not in captured  # no run dispatched
+    assert captured["dispatched"] is False
+
+
 def test_dispatch_falls_back_to_team_default_repo():
     issue = _fixture_issue()
     captured = _run_dispatch(
