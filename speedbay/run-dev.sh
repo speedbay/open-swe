@@ -41,4 +41,8 @@ echo "git hooks    : $GIT_CONFIG_VALUE_0"
 # .langgraph_api/*.pckl persistence flushes (~every 10s), hot-reloads itself
 # in a loop, and eventually dies mid-reload. This is an operational server,
 # not active development — restart via speedbay/openswe after code changes.
-exec "$ROOT/.venv/bin/langgraph" dev --no-browser --no-reload "$@"
+# --n-jobs-per-worker: the dev CLI hardcodes run-queue concurrency to 1 when
+# this flag is absent (the "Default: 10" help text describes the config-module
+# default the CLI overrides); remove this once upstream stops overriding it.
+exec "$ROOT/.venv/bin/langgraph" dev --no-browser --no-reload \
+    --n-jobs-per-worker "${OPENSWE_N_JOBS_PER_WORKER:-3}" "$@"
