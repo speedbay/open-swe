@@ -12,8 +12,8 @@ the webhook uses, so assignee owner-scoping and prompt construction stay
 enforced in exactly one place.
 
 The webhook remains the fast path; this sweep only bounds missed-event
-latency (cutoff + cron period). Provision the cron once per deployment with
-``speedbay/ensure_verify_sweep_cron.py``.
+latency (cutoff + cron period). The cron is ensured idempotently at boot by
+``agent/speedbay/verify_sweep_cron.py`` (OPE-53).
 """
 
 from __future__ import annotations
