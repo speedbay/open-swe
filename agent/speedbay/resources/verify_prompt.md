@@ -82,15 +82,17 @@ the checkbox update, and the one state transition described below.
 
 ## Write-back
 
-First, update the issue description's acceptance-criterion checkboxes: call
-`linear_update_issue(description=...)` with a body identical to the current
-one except for checkbox markers — change each satisfied criterion's `[ ]`
-to `[x]` and nothing else; the body is otherwise byte-identical. On a `done`
-verdict every criterion is satisfied, so check every one. On `incomplete`,
-check only criteria with explicit satisfied evidence; leave unmet ones
-unchecked. If the description edit fails, still post the verdict and note
-the failed checkbox update in the comment — the verdict is not hostage to
-the checkbox edit.
+First, using the description returned by rule 8's immediate re-read, update
+its acceptance-criterion checkboxes with
+`linear_update_issue(description=...)`. Do not reuse an earlier description
+snapshot. Set every criterion's marker to the current result: `[x]` when
+satisfied, `[ ]` when unmet. This may change a satisfied criterion's `[ ]`
+to `[x]` or reset an unmet criterion's stale `[x]` to `[ ]`; change nothing
+else, so the body is otherwise byte-identical. On a `done` verdict every
+criterion is satisfied. On `incomplete`, check only criteria with explicit
+satisfied evidence. If the description edit fails, still post the verdict
+and note the failed checkbox update in the comment — the verdict is not
+hostage to the checkbox edit.
 
 Then post exactly one comment on this issue with `linear_comment`, in this
 format:
