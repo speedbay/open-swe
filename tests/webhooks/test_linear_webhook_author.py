@@ -133,3 +133,22 @@ def test_linear_issue_prompt_mentions_pr_references_and_conventions() -> None:
     assert "PR description links back to this Linear ticket" in prompt
     assert "repository's PR conventions" in prompt
     assert ".changelog/README.md" in prompt
+
+
+def test_linear_issue_prompt_contains_acceptance_criteria_contract() -> None:
+    _configurable, _upsert, _email, content = _run_process(
+        _issue_data(user_email="zhen@example.com"),
+        {"owner": "langchain-ai", "name": "open-swe"},
+    )
+
+    blocks = cast(list[object], content)
+    block = cast(dict[str, object], blocks[0])
+    prompt = cast(str, block["text"])
+    assert linear_webhook.ACCEPTANCE_CRITERIA_CONTRACT in prompt
+    assert "Address every acceptance criterion in the issue; do not open a PR" in prompt
+    assert "say so on the ticket instead" in prompt
+    assert "cite evidence per criterion" in prompt
+    assert "the test name and command for behavior ones" in prompt
+    assert "post-merge verification can map criteria to evidence directly" in prompt
+    assert "verification commands go in the PR body's verification section" in prompt
+    assert "re-runs declared commands at the merge SHA" in prompt
