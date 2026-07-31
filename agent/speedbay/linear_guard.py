@@ -23,6 +23,15 @@ verification attempt).
 Fail-open by design: if the viewer id cannot be resolved (key missing or
 Linear unreachable), the guard reports "not self" so human comments are never
 blocked by an outage — the pre-guard state was permanently fail-open anyway.
+
+Duplicate-delivery dedup (OPE-56): Linear delivers each event once per
+covering webhook (two for OPE — verified live during OPE-39), and the comment
+route dispatched on every delivery, so each duplicate spawned an ``interrupted``
+twin run the same second. ``is_duplicate_comment`` keys a process-lifetime
+bounded FIFO set on the comment's ``data.id`` — comments are create-only, so
+one id is delivered once per webhook and never legitimately recurs. Mirrors
+``_seen_transitions`` in ``verify_trigger.py``; multi-worker deployments fall
+back to the thread-level interrupt semantics, as documented there.
 """
 
 from __future__ import annotations
@@ -78,6 +87,31 @@ async def _viewer_id() -> str | None:
     _resolved = True
     logger.info("self-trigger guard active for Linear user %s", _cached_id)
     return _cached_id
+
+
+# Process-lifetime duplicate-delivery guard (OPE-56). Same sizing and FIFO
+# eviction as ``_seen_transitions`` in verify_trigger.py; a set, not a map,
+# because the comment id alone is the dedup key — there is no per-id value.
+_SEEN_COMMENTS_MAX = 512
+_seen_comment_ids: dict[str, None] = {}
+
+
+def is_duplicate_comment(payload: dict[str, Any]) -> bool:
+    """True when this comment id was already dispatched by this process.
+
+    Missing/blank id fails open (not duplicate): such a delivery cannot be
+    distinguished from a fresh comment, so the thread-level interrupt
+    semantics absorb any duplicate instead of dropping real triggers.
+    """
+    comment_id = (payload.get("data") or {}).get("id")
+    if not isinstance(comment_id, str) or not comment_id.strip():
+        return False
+    if comment_id in _seen_comment_ids:
+        return True
+    _seen_comment_ids[comment_id] = None
+    while len(_seen_comment_ids) > _SEEN_COMMENTS_MAX:
+        _seen_comment_ids.pop(next(iter(_seen_comment_ids)))
+    return False
 
 
 async def is_self_comment(payload: dict[str, Any]) -> bool:

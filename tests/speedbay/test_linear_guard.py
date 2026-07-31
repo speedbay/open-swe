@@ -143,3 +143,148 @@ def test_scoped_instance_drops_missing_email_fail_closed(
     assert guard.is_foreign_comment(_comment_from(None)) is True
     assert guard.is_foreign_comment(_comment_from("")) is True
     assert guard.is_foreign_comment({}) is True
+
+
+# --- duplicate-delivery dedup (OPE-56) -----------------------------------------
+
+COMMENT_ID = PAYLOAD["data"]["id"]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_seen_comments():
+    """The dedup set lives for the process; tests need isolation."""
+    guard._seen_comment_ids.clear()
+    yield
+    guard._seen_comment_ids.clear()
+
+
+def _route_call(payload: dict, bg_tasks, *, resolve_repo: bool = True):
+    """One delivery through linear_webhook with everything external stubbed."""
+    import asyncio as _asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from agent.webhooks import linear_routes
+
+    with (
+        patch("agent.webhooks.common.verify_linear_signature", return_value=True),
+        patch(
+            "agent.webhooks.common.fetch_linear_issue_details",
+            new_callable=AsyncMock,
+            return_value=None,  # route falls back to the webhook's issue data
+        ),
+        patch.object(
+            linear_routes.speedbay_linear_guard,
+            "is_self_comment",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch("agent.webhooks.common.extract_repo_from_text", return_value=None),
+        patch(
+            "agent.webhooks.common.resolve_login_from_email_async",
+            new_callable=AsyncMock,
+            return_value="cbass-speedbay",
+        ),
+        patch(
+            "agent.webhooks.common.get_profile_default_repo",
+            new_callable=AsyncMock,
+            return_value={"owner": "speedbay", "name": "warehouse"} if resolve_repo else None,
+        ),
+        patch("agent.webhooks.common.get_repo_config_from_team_mapping", return_value=None),
+        patch(
+            "agent.webhooks.common.get_team_default_repo",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch("agent.webhooks.common._is_repo_allowed", return_value=True),
+    ):
+        mock_request = AsyncMock()
+        mock_request.body.return_value = json.dumps(payload).encode()
+        mock_request.headers = {"Linear-Signature": "valid"}
+        return _asyncio.run(linear_routes.linear_webhook(mock_request, bg_tasks))
+
+
+class _CapturingBackgroundTasks:
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def add_task(self, fn, *args, **kwargs) -> None:
+        self.calls.append((fn, args))
+
+
+def _triggering_payload(comment_id: str | None) -> dict:
+    payload = copy.deepcopy(PAYLOAD)
+    payload["data"]["body"] = "@openswe implement"
+    if comment_id is None:
+        del payload["data"]["id"]
+    else:
+        payload["data"]["id"] = comment_id
+    return payload
+
+
+def test_guard_same_comment_id_twice_second_is_duplicate() -> None:
+    assert guard.is_duplicate_comment(PAYLOAD) is False
+    assert guard.is_duplicate_comment(copy.deepcopy(PAYLOAD)) is True
+
+
+def test_guard_distinct_comment_ids_both_pass() -> None:
+    other = _triggering_payload("bbbb-cccc-dddd-eeee")
+    assert guard.is_duplicate_comment(PAYLOAD) is False
+    assert guard.is_duplicate_comment(other) is False
+
+
+def test_guard_missing_comment_id_fails_open() -> None:
+    assert guard.is_duplicate_comment({}) is False
+    assert guard.is_duplicate_comment({"data": {}}) is False
+    assert guard.is_duplicate_comment({"data": {"id": "  "}}) is False
+
+
+def test_guard_bounded_fifo_eviction() -> None:
+    guard._seen_comment_ids.clear()
+    for i in range(guard._SEEN_COMMENTS_MAX):
+        assert guard.is_duplicate_comment({"data": {"id": f"c-{i}"}}) is False
+    assert len(guard._seen_comment_ids) == guard._SEEN_COMMENTS_MAX
+    # One more id evicts the oldest (FIFO); newer ids stay deduped.
+    assert guard.is_duplicate_comment({"data": {"id": "c-new"}}) is False
+    assert guard.is_duplicate_comment({"data": {"id": "c-1"}}) is True
+    assert "c-0" not in guard._seen_comment_ids
+    assert len(guard._seen_comment_ids) == guard._SEEN_COMMENTS_MAX
+
+
+def test_route_replaying_captured_payload_dispatches_exactly_once() -> None:
+    """AC: the same comment delivered twice (once per covering webhook) starts
+    exactly one run — no interrupted twin."""
+    bg = _CapturingBackgroundTasks()
+    first = _route_call(_triggering_payload(COMMENT_ID), bg)
+    second = _route_call(_triggering_payload(COMMENT_ID), bg)
+    assert first["status"] == "accepted"
+    assert second["status"] == "ignored"
+    assert "Duplicate" in second["reason"]
+    assert len(bg.calls) == 1
+
+
+def test_route_distinct_comments_on_same_issue_both_dispatch() -> None:
+    bg = _CapturingBackgroundTasks()
+    first = _route_call(_triggering_payload(COMMENT_ID), bg)
+    second = _route_call(_triggering_payload("bbbb-cccc-dddd-eeee"), bg)
+    assert first["status"] == "accepted"
+    assert second["status"] == "accepted"
+    assert len(bg.calls) == 2
+
+
+def test_route_ignored_delivery_does_not_poison_retry() -> None:
+    bg = _CapturingBackgroundTasks()
+    payload = _triggering_payload(COMMENT_ID)
+    first = _route_call(payload, bg, resolve_repo=False)
+    second = _route_call(payload, bg)
+    assert first == {"status": "ignored", "reason": "No default repository configured"}
+    assert second["status"] == "accepted"
+    assert len(bg.calls) == 1
+
+
+def test_route_missing_comment_id_still_dispatches() -> None:
+    bg = _CapturingBackgroundTasks()
+    first = _route_call(_triggering_payload(None), bg)
+    second = _route_call(_triggering_payload(None), bg)
+    assert first["status"] == "accepted"
+    assert second["status"] == "accepted"
+    assert len(bg.calls) == 2

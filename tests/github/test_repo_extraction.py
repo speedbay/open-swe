@@ -149,7 +149,7 @@ class TestLinearWebhookRepoOverride:
             "type": "Comment",
             "action": "create",
             "data": {
-                "id": "comment-123",
+                "id": "comment-124",
                 "body": "@openswe please fix this repo:custom-org/custom-repo",
                 "issue": {
                     "id": "issue-456",
@@ -202,7 +202,7 @@ class TestLinearWebhookRepoOverride:
             "type": "Comment",
             "action": "create",
             "data": {
-                "id": "comment-123",
+                "id": "comment-125",
                 "body": "@openswe please fix this bug",
                 "issue": {
                     "id": "issue-456",
@@ -252,7 +252,7 @@ class TestLinearWebhookRepoOverride:
             "type": "Comment",
             "action": "create",
             "data": {
-                "id": "comment-123",
+                "id": "comment-126",
                 "body": "@openswe please fix this bug",
                 "issue": {
                     "id": "issue-456",

@@ -186,6 +186,15 @@ async def linear_webhook(  # noqa: PLR0911, PLR0912, PLR0915
     if comment_user:
         issue["comment_author"] = comment_user
 
+    # SPEEDBAY REGISTRATION (OPE-56): claim the comment only after all
+    # fallible validation and repo resolution, immediately before dispatch.
+    if speedbay_linear_guard.is_duplicate_comment(payload):
+        common.logger.info("Ignoring webhook: duplicate delivery of an already-dispatched comment")
+        return {
+            "status": "ignored",
+            "reason": "Duplicate delivery of an already-dispatched comment",
+        }
+
     common.logger.info(
         "Accepted webhook for issue '%s' (%s), scheduling background task",
         issue.get("title"),
