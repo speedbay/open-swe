@@ -1,7 +1,7 @@
 # Open SWE setup — zero to running
 
 Ordered onboarding checklist. Every step is either an exact command or a
-pointer to the authoritative doc section (FORK.md here; upstream
+pointer to the authoritative doc section (OPERATIONS.md here; upstream
 `docs/INSTALLATION.md` for GitHub App / LangSmith mechanics). Each phase ends
 with a **Verify** command and its expected output — run them; do not assume.
 
@@ -21,12 +21,12 @@ Two paths:
 2. **Linear**: get a seat in the `linear.app/speed-bay` workspace with access
    to your team's project.
 3. **User mapping**: an operator seeds your `github-login → work-email`
-   mapping (FORK.md § User mappings without Slack OAuth — the UI cannot
+   mapping (OPERATIONS.md § User mappings without Slack OAuth — the UI cannot
    create mappings until Slack OAuth is configured). Unmapped users can still
    trigger runs, but with limited bot permissions and no attribution.
 4. **Trigger a run**: comment `@openswe <what you want>` on a Linear ticket
    from your personal account (bot/API comments are dropped by the
-   self-trigger guard, FORK.md § Linear trigger). The run works the ticket's
+   self-trigger guard, OPERATIONS.md § Linear trigger). The run works the ticket's
    repo; PRs come back attributed to you.
 5. **Watch it**: on the operator machine's dashboard (`http://localhost:3000`),
    your run appears in the sidebar thread list; cost lands under `/usage`.
@@ -74,12 +74,12 @@ uv sync                                    # creates .venv
 ```
 
 Populate `.env` from `docs/INSTALLATION.md` §6, then apply — in this order —
-the two FORK.md checklists, which exist because the sample block ships
+the two OPERATIONS.md checklists, which exist because the sample block ships
 several values **empty with an inline comment**, each failing differently:
 
-1. FORK.md § Local boot (credential-free) — the three deviations
+1. OPERATIONS.md § Local boot (credential-free) — the three deviations
    (`LANGCHAIN_TRACING_V2`, `SANDBOX_TYPE="docker"`, dashboard vars).
-2. FORK.md § Dashboard → **Login env checklist** — the full required table:
+2. OPERATIONS.md § Dashboard → **Login env checklist** — the full required table:
    `GITHUB_APP_CLIENT_ID/SECRET`, `DASHBOARD_JWT_SECRET`,
    `DASHBOARD_API_BASE_URL`, `DASHBOARD_BASE_URL`,
    `DASHBOARD_ALLOWED_ORIGINS`, `ALLOWED_GITHUB_ORGS` (empty = org gate
@@ -109,7 +109,7 @@ docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedb
 
 ### B4. Tunnel (per machine)
 
-FORK.md § Webhook tunnel → Per-machine setup: `cloudflared tunnel login`
+OPERATIONS.md § Webhook tunnel → Per-machine setup: `cloudflared tunnel login`
 against the `speedbay.com` zone, then create your **own hostname** (e.g.
 `openswe-<you>.speedbay.com`).
 
@@ -128,7 +128,7 @@ against the `speedbay.com` zone, then create your **own hostname** (e.g.
 
 The existing webhooks point at the first operator's hostname. Each additional
 operator registers their own set (same teams, **their** hostname) with
-`speedbay/create_linear_webhook.py` and a temporary admin key (FORK.md
+`speedbay/create_linear_webhook.py` and a temporary admin key (OPERATIONS.md
 § Linear trigger — UI-created webhooks never verify; API-created ones with
 our shared `LINEAR_WEBHOOK_SECRET` do). Only do this **after** B4's owner
 scope is set.
@@ -156,7 +156,7 @@ checks `200`.
 cd ui && pnpm install && pnpm dev &        # http://localhost:3000
 ```
 
-Log in via GitHub (FORK.md § Dashboard). Set your defaults under
+Log in via GitHub (OPERATIONS.md § Dashboard). Set your defaults under
 **Open SWE Agent** settings (model, default repository; leave Base Branch and
 Branch Prefix empty — a prefix breaks the issue-keyed branch convention the
 PR-standards gate enforces). Seed teammate mappings (Path A step 3).
@@ -187,8 +187,8 @@ reliability; anything less, start at `/tmp/openswe-backend.log`.
 | Symptom | First look |
 |---|---|
 | Login button 404s on :3000 | `ui/.env` missing `VITE_DASHBOARD_API_BASE_URL` |
-| `auth/login` 500 | empty checklist var — exact mapping in FORK.md § Login env checklist |
+| `auth/login` 500 | empty checklist var — exact mapping in OPERATIONS.md § Login env checklist |
 | Callback 400 `unknown error` | `TOKEN_ENCRYPTION_KEY` empty/invalid (`EncryptionKeyMissingError` in the log) |
 | `ERR_CONNECTION_REFUSED` on :2024 | backend down — `speedbay/openswe status`, then the log |
 | Run never starts from a Linear comment | posted by a bot/API key (guard drops it), or webhook missing for a new private team (B5) |
-| Anything else | `/tmp/openswe-backend.log`, then FORK.md § Known issues |
+| Anything else | `/tmp/openswe-backend.log`, then OPERATIONS.md § Known issues |

@@ -5,7 +5,7 @@ API (https://docs.fireworks.ai/guides/security_compliance/data_handling).
 The documented ways to fall out of ZDR are the Responses API with
 ``store=True``, per-feature opt-in logging, and proprietary Fireworks models
 (e.g. FireFunction, which logs I/O for 30 days). These tests fail when a code
-change would step outside the ZDR surface; see FORK.md "Fireworks Zero Data
+change would step outside the ZDR surface; see OPERATIONS.md "Fireworks Zero Data
 Retention (OPE-37)".
 """
 
@@ -33,7 +33,7 @@ def test_every_configured_fireworks_model_is_zdr_verified() -> None:
     assert not unverified, (
         f"Fireworks model(s) not ZDR-verified: {sorted(unverified)}. "
         "Verify each is an open model under Fireworks' ZDR default, then extend "
-        "ZDR_VERIFIED_FIREWORKS_IDS (see FORK.md, OPE-37)."
+        "ZDR_VERIFIED_FIREWORKS_IDS (see OPERATIONS.md, OPE-37)."
     )
 
 

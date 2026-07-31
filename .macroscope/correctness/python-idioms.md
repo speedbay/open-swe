@@ -19,8 +19,9 @@
 #
 # SCOPE — org layer only. This repo is a fork of langchain-ai/open-swe; upstream
 # Python does not follow Speed Bay house style and must not be flagged against
-# it. These idioms apply only to Speed Bay-owned files (FORK.md § Speed Bay org
-# layer and § File placement rule). Upstream-file deviations (marked SPEEDBAY
+# it. These idioms apply only to Speed Bay-owned files (OPERATIONS.md § Speed
+# Bay org layer and FORK.md § File placement rule). Upstream-file deviations
+# (marked SPEEDBAY
 # DEVIATION) stay minimal by policy and follow upstream's local style, so they
 # are deliberately out of scope here too.
 include:

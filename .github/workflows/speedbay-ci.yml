@@ -25,7 +25,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The org layer is three whole directories (FORK.md § Speed Bay org layer):
+  # The org layer is three whole directories (OPERATIONS.md § Speed Bay org layer):
   # new org files land in CI scope automatically, no list to maintain.
   # Upstream-owned files carrying marked SPEEDBAY deviations (agent/server.py,
   # agent/utils/sandbox.py, agent/webhooks/linear_routes.py, ...) are

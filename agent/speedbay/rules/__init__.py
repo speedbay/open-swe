@@ -1,6 +1,6 @@
 """Speed Bay PR-standards rule content: atomicity cap math and commit hygiene.
 
-SPEEDBAY ORG-LAYER PACKAGE (FORK.md § Speed Bay org layer). Pure functions
+SPEEDBAY ORG-LAYER PACKAGE (OPERATIONS.md § Speed Bay org layer). Pure functions
 only — no git, no subprocess, no network, no I/O: rows/strings in, verdict
 values out. The gate middleware (OPE-8, ``agent/speedbay/pr_standards.py``)
 consumes this module; this package deliberately contains no wiring.
