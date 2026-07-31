@@ -13,9 +13,9 @@ import asyncio
 import copy
 import json
 import pathlib
-from types import SimpleNamespace
 
 import pytest
+from starlette.types import Message
 
 from agent.speedbay import linear_guard as guard
 
@@ -193,12 +193,12 @@ def route_call(monkeypatch: pytest.MonkeyPatch):
         nonlocal profile_repo
         profile_repo = {"owner": "speedbay", "name": "warehouse"} if resolve_repo else None
 
-        async def _body():
-            return json.dumps(payload).encode()
+        async def _receive() -> Message:
+            return {"type": "http.request", "body": json.dumps(payload).encode()}
 
-        request = SimpleNamespace(
-            body=_body,
-            headers={"Linear-Signature": "valid"},
+        request = linear_routes.common.Request(
+            {"type": "http", "headers": [(b"linear-signature", b"valid")]},
+            _receive,
         )
         return asyncio.run(linear_routes.linear_webhook(request, bg_tasks))
 
