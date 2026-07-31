@@ -141,8 +141,9 @@ assignees, or reviewers.
 
 ## Sources
 
-- `FORK.md` (this repo) — fork conventions, org layer, and upstream-sync
-  process the carve-out above depends on.
+- `FORK.md` (this repo) — fork conventions and the upstream-sync process the
+  carve-out above depends on.
+- `OPERATIONS.md` (this repo) — Speed Bay org-layer scope and operations.
 - Macroscope CRA reference: https://docs.macroscope.com/check-run-agents
   (Docs checked: 2026-07-28) — frontmatter schema, `conclusion: failure`
   semantics, `full_diff` input, default tools.

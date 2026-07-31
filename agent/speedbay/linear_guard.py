@@ -5,7 +5,7 @@ SPEEDBAY org-layer file — upstream does not own it.
 The agent posts its Linear replies with the same runtime ``LINEAR_API_KEY``
 that can trigger runs, and comments authored with a plain API key arrive with
 ``botActor: null`` — the route's bot filter never catches them (verified live;
-FORK.md § Linear trigger). Without this guard, the only things preventing a
+OPERATIONS.md § Linear trigger). Without this guard, the only things preventing a
 self-trigger loop are upstream's known-prefix list (which does not match our
 agent's free-form replies) and the model happening not to write ``@openswe``
 in a reply. One quoted trigger instruction in a completion comment would spawn

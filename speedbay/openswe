@@ -27,7 +27,7 @@ BACKEND_LOG = "/tmp/openswe-backend.log"
 TUNNEL_LOG = "/tmp/openswe-tunnel.log"
 # The langgraph backend's bind address (langgraph dev's default port, also
 # assumed by docs/INSTALLATION.md) and the named Cloudflare tunnel that fronts
-# it (created in OPE-2; FORK.md § Webhook tunnel). The tunnel command and both
+# it (created in OPE-2; OPERATIONS.md § Webhook tunnel). The tunnel command and both
 # health checks derive from these — change them here only.
 BACKEND_URL = "http://localhost:2024"
 TUNNEL_NAME = "openswe"
