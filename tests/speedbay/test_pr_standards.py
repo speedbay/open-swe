@@ -262,6 +262,12 @@ def _stub_durable_state(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_corrective_rounds_bounded_then_escalates(monkeypatch, caplog) -> None:
+    """Store outage: rounds still count, but the run is never wedged.
+
+    Without a durable pending record there is no fingerprint a human could
+    approve, so the fallback path must stay agent-recoverable (fail-open for
+    infrastructure faults) while still telling the agent to surface it.
+    """
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
     _stub_durable_state(monkeypatch)
     middleware = PRStandardsMiddleware()
@@ -272,8 +278,8 @@ def test_corrective_rounds_bounded_then_escalates(monkeypatch, caplog) -> None:
     with caplog.at_level("ERROR"):
         payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
     assert payload["corrective_round"] == 3
-    assert payload["escalation_required"] is True
-    assert payload["recoverable_by_agent"] is False
+    assert payload["escalation_required"] is False
+    assert payload["recoverable_by_agent"] is True
     assert "surface this gate failure to a human" in payload["error"]
     assert "durable approval state error" in caplog.text
 

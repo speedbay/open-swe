@@ -75,7 +75,9 @@ _FALLBACK_ERROR = (
 )
 
 
-async def _numstat(backend: Any, base: str, head: str, repo_dir: str) -> tuple[str, bool] | None:
+async def _numstat(
+    backend: Any, base: str, head: str, repo_dir: str
+) -> tuple[str, bool, str] | None:
     """``git diff --numstat`` of ``head`` vs the PR base, or None if undiffable.
 
     Runs inside ``repo_dir`` — the resolved repo clone under ``/workspace``
@@ -83,7 +85,10 @@ async def _numstat(backend: Any, base: str, head: str, repo_dir: str) -> tuple[s
     which is not a git repo (OPE-59). Mirrors quality_gates ``_changed_paths``:
     tries ``origin/<base>`` (the push target) then ``<base>``; refs and the
     directory are shell-quoted (model- and issue-controlled args).
-    Returns ``(output, truncated)`` — truncated output is missing rows.
+    Returns ``(output, truncated, base_ref)`` — truncated output is missing
+    rows, and ``base_ref`` is the ref the diff actually ran against so the
+    approval fingerprint binds the same base the verdict was computed from
+    (never a differently-resolved fallback).
     """
     for ref in (f"origin/{base}", base):
         response = await backend.aexecute(
@@ -93,7 +98,7 @@ async def _numstat(backend: Any, base: str, head: str, repo_dir: str) -> tuple[s
         )
         if getattr(response, "exit_code", None) == 0:
             output = getattr(response, "output", "") or ""
-            return output, bool(getattr(response, "truncated", False))
+            return output, bool(getattr(response, "truncated", False)), ref
     return None
 
 
@@ -114,13 +119,16 @@ async def _rev_parse(backend: Any, repo_dir: str, ref: str) -> str | None:
 
 
 async def _base_and_head_shas(
-    backend: Any, base: str, head: str, repo_dir: str
+    backend: Any, base_ref: str, head: str, repo_dir: str
 ) -> tuple[str, str] | None:
-    """The SHAs the fingerprint binds; None when unresolvable (fail open)."""
+    """The SHAs the fingerprint binds; None when unresolvable (fail open).
+
+    ``base_ref`` is the exact ref ``_numstat`` diffed against — resolved
+    directly, with no independent origin/local fallback, so the fingerprint
+    can never bind a different base than the evaluated diff.
+    """
     head_sha = await _rev_parse(backend, repo_dir, head)
-    base_sha = await _rev_parse(backend, repo_dir, f"origin/{base}")
-    if base_sha is None:
-        base_sha = await _rev_parse(backend, repo_dir, base)
+    base_sha = await _rev_parse(backend, repo_dir, base_ref)
     if not head_sha or not base_sha:
         return None
     return base_sha, head_sha
@@ -373,7 +381,7 @@ class PRStandardsMiddleware(AgentMiddleware):
                     base,
                 )
                 return None
-            numstat, truncated = diff
+            numstat, truncated, base_ref = diff
             verdict = check_atomicity(parse_numstat(numstat))
             if truncated:  # missing rows would undercount — fail closed
                 verdict = attrs.evolve(
@@ -425,7 +433,7 @@ class PRStandardsMiddleware(AgentMiddleware):
             thread_id=str(thread_id),
             backend=backend,
             repo_dir=repo_dir,
-            base=base,
+            base=base_ref,
             branch=branch,
             issue_id=issue_id,
             issue_uuid=_issue_uuid(configurable),
@@ -548,18 +556,21 @@ class PRStandardsMiddleware(AgentMiddleware):
             logger.exception("PR standards gate: durable approval state error")
             rounds = self._fallback_rounds.get(thread_id, 0) + 1
             self._fallback_rounds[thread_id] = rounds
-            escalate = rounds >= MAX_CORRECTIVE_ROUNDS
             fallback_advice = list(advice)
-            if escalate:
+            if rounds >= MAX_CORRECTIVE_ROUNDS:
                 fallback_advice.append(
                     "The durable gate-approval state store failed (see backend "
                     "logs): surface this gate failure to a human for approval."
                 )
+            # Never escalate on this path: without a durable pending record
+            # there is no fingerprint for a human to approve, so flipping
+            # recoverable_by_agent to False would wedge the run permanently —
+            # a store outage stays agent-recoverable per the fail-open policy.
             return _block_message(
                 request,
                 advice=fallback_advice,
                 verdict=verdict,
                 violations=violations,
                 rounds=rounds,
-                escalate=escalate,
+                escalate=False,
             )

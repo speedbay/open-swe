@@ -467,3 +467,123 @@ def test_bump_rounds_works_without_a_pending_record(monkeypatch) -> None:
     assert _run(ga.bump_gate_rounds("t-1", FP)) == 1
     assert _run(ga.bump_gate_rounds("t-1", FP)) == 2
     assert "status" not in _run(ga.get_gate_approvals("t-1"))[FP]
+
+
+# --- review-hardening regressions (PR #44 review) ------------------------------
+
+
+def test_decide_rejects_non_pending_records(monkeypatch) -> None:
+    """Only pending records are decidable: no approve-replay on spent exemptions."""
+    client = FakeLangGraphClient()
+    _wire_store(monkeypatch, client)
+    _run(
+        ga.ensure_gate_approval_pending(
+            "t-1",
+            fingerprint=FP,
+            issue_id="uuid-1",
+            base_sha="b" * 40,
+            head_sha="h" * 40,
+            failed_rule_ids=["atomicity"],
+        )
+    )
+    assert _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner")) is not None
+    # Already approved: a second decision must be refused.
+    assert _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner")) is None
+    # Consumed: still not decidable — only a new breach cycle re-arms it.
+    assert _run(ga.consume_gate_approval("t-1", FP)) is True
+    assert _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner")) is None
+    assert _run(ga.consume_gate_approval("t-1", FP)) is False
+
+
+def test_consumed_record_refreshes_to_pending_on_next_attempt(monkeypatch) -> None:
+    """A spent exemption's record returns to pending (and re-notifies) on the
+    next non-compliant attempt, so the dashboard fallback can surface it."""
+    client = FakeLangGraphClient()
+    _wire_store(monkeypatch, client)
+    kwargs: dict[str, Any] = {
+        "fingerprint": FP,
+        "issue_id": "uuid-1",
+        "base_sha": "b" * 40,
+        "head_sha": "h" * 40,
+        "failed_rule_ids": ["atomicity"],
+    }
+    _run(ga.ensure_gate_approval_pending("t-1", **kwargs))
+    _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner"))
+    _run(ga.mark_gate_approval_notified("t-1", FP))
+    assert _run(ga.consume_gate_approval("t-1", FP)) is True
+
+    record, created = _run(ga.ensure_gate_approval_pending("t-1", **kwargs))
+    assert created is False
+    assert record["status"] == ga.GATE_APPROVAL_PENDING
+    assert record["notified"] is False
+    rows = _run(ga.list_pending_gate_approvals())
+    assert [row["record"]["fingerprint"] for row in rows] == [FP]
+
+
+def test_pending_listing_paginates_past_first_page(monkeypatch) -> None:
+    """Threads beyond the first search page are still surfaced."""
+    threads = FakeThreads()
+    for i in range(105):
+        threads.metadata[f"t-{i}"] = {}
+    threads.metadata["t-104"] = {
+        ga.GATE_APPROVALS_KEY: {
+            FP: {"fingerprint": FP, "status": ga.GATE_APPROVAL_PENDING, "requested_at": "2026"}
+        }
+    }
+    _wire_store(monkeypatch, FakeLangGraphClient(threads))
+    rows = _run(ga.list_pending_gate_approvals())
+    assert [(row["thread_id"], row["record"]["fingerprint"]) for row in rows] == [("t-104", FP)]
+
+
+def test_concurrent_consume_spends_exactly_once(monkeypatch) -> None:
+    """Two racing consumers cannot both spend the same one-time exemption."""
+    client = FakeLangGraphClient()
+    _wire_store(monkeypatch, client)
+    _run(
+        ga.ensure_gate_approval_pending(
+            "t-1",
+            fingerprint=FP,
+            issue_id="uuid-1",
+            base_sha="b" * 40,
+            head_sha="h" * 40,
+            failed_rule_ids=["atomicity"],
+        )
+    )
+    _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner"))
+
+    async def race() -> list[bool]:
+        return list(
+            await asyncio.gather(
+                ga.consume_gate_approval("t-1", FP),
+                ga.consume_gate_approval("t-1", FP),
+            )
+        )
+
+    assert sorted(_run(race())) == [False, True]
+
+
+def test_fingerprint_binds_the_diffed_base_ref(monkeypatch, caplog) -> None:
+    """When origin/<base> is undiffable and the local base is used, the
+    fingerprint's base SHA resolves from that same local ref."""
+    client, linear = FakeLangGraphClient(), FakeLinear()
+    _wire_store(monkeypatch, client)
+    _wire_linear(monkeypatch, linear)
+    backend = FakeBackend(
+        {
+            # Insertion order matters: the origin needle is a superstring of
+            # the local one, so it must be matched first.
+            "diff --numstat origin/main": FakeResponse(output="", exit_code=128),
+            "diff --numstat main": FakeResponse(output="400\t0\tagent/api.py\n"),
+            "rev-parse ope-10-gate-breach": FakeResponse(output="h" * 40),
+            "rev-parse origin/main": FakeResponse(output="x" * 40),
+            "rev-parse main": FakeResponse(output="b" * 40),
+        }
+    )
+    _wire_gate(monkeypatch, backend)
+    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler)))
+    assert payload["code"] == "pr_standards_failed"
+    rev_parses = [c for c in backend.commands if "rev-parse" in c]
+    assert not any("rev-parse origin/main" in c for c in rev_parses)
+    record = client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY]
+    (fingerprint,) = record.keys()
+    assert fingerprint == ga.gate_fingerprint("b" * 40, "h" * 40, ["atomicity"])
