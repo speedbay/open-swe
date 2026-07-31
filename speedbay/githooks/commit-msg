@@ -1,5 +1,6 @@
 #!/bin/sh
-# Strip AI-attribution trailers from every commit the agent makes.
+# Enforce Speed Bay commit hygiene on every commit the agent makes:
+# strip AI-attribution trailers, then require the Linear closing line.
 #
 # warehouse's AGENTS.md forbids AI attribution, but upstream's collaboration
 # prompt instructs the model to append `Co-authored-by: open-swe[bot]` verbatim.
@@ -22,3 +23,12 @@ awk 'BEGIN{blank=0} {if ($0 ~ /^[[:space:]]*$/) {blank++} else {while (blank>0) 
 	"$MSG_FILE.tmp" > "$MSG_FILE"
 
 rm -f "$MSG_FILE.tmp"
+
+# Require the Linear closing line (Agent Hygiene CRA rule 2 / warehouse
+# COMMIT-HYGIENE). The conventions prompt already asks for it, but prompt-level
+# instructions lose intermittently (see above), so enforce it deterministically.
+if ! grep -qE '^Closes [A-Z]+-[0-9]+$' "$MSG_FILE"; then
+	echo "commit-msg: missing 'Closes <TEAM>-NNN' line in the commit body." >&2
+	echo "Add it (e.g. 'Closes OPE-58') on its own line before the first '## ' heading." >&2
+	exit 1
+fi

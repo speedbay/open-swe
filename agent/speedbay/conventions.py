@@ -60,6 +60,11 @@ over the generic PR/commit guidance earlier in this prompt.
 `DOC-123: add lease expiry guard`. Do NOT use conventional-commit prefixes
 (`fix:`, `feat:`, `chore:`) and do NOT append a `[closes ...]` suffix.
 
+**Branch name**: `<team>-NNN-<slug>`, lowercase — for example
+`ope-56-linear-comment-dedup`. Never `open-swe/<slug>`: this overrides the
+`open-swe/<short-task-slug>` branch guidance earlier in this prompt. Branch
+reuse is unchanged — if a branch already exists for this thread, keep using it.
+
 **PR body and commit message body** use this exact structure. `Closes <TICKET>`
 must appear verbatim on its own line BEFORE the first `##` heading, and all four
 sections must be present, in this order, each non-empty:

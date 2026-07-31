@@ -81,11 +81,12 @@ def test_commit_msg_hook_strips_attribution(sandbox: DockerSandbox) -> None:
     res = sandbox.execute(
         "rm -rf /tmp/hooktest && mkdir /tmp/hooktest && cd /tmp/hooktest && git init -q . && "
         "echo x > f && git add f && "
-        "printf 'T-1: subject\\n\\nCo-authored-by: open-swe[bot] <x@y>\\n' > /tmp/msg && "
+        "printf 'T-1: subject\\n\\nCloses T-1\\n\\nCo-authored-by: open-swe[bot] <x@y>\\n' > /tmp/msg && "
         "git commit -q -F /tmp/msg && git log -1 --format=%B"
     )
     assert res.exit_code == 0, res.output
     assert "Co-authored-by" not in res.output
+    assert "Closes T-1" in res.output
 
 
 def test_isolation_no_host_paths(sandbox: DockerSandbox) -> None:
