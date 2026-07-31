@@ -311,9 +311,9 @@ def test_integration_oversized_blocks_and_compliant_passes(monkeypatch) -> None:
             sandbox.aexecute(
                 "cd /workspace && git init -q -b main && git config user.email t@t "
                 "&& git config user.name t && echo base > README.md "
-                "&& git add . && git commit -qm base "
+                "&& git add . && git commit -qm base -m 'Closes T-1' "
                 f"&& git checkout -q -b {BRANCH} "
-                "&& seq 400 > agent_big.py && git add . && git commit -qm big"
+                "&& seq 400 > agent_big.py && git add . && git commit -qm big -m 'Closes T-1'"
             )
         )
 
@@ -333,7 +333,7 @@ def test_integration_oversized_blocks_and_compliant_passes(monkeypatch) -> None:
         _run(
             sandbox.aexecute(
                 "cd /workspace && git checkout -q main && git checkout -q -b ope-8-small "
-                "&& echo tweak >> README.md && git add . && git commit -qm small"
+                "&& echo tweak >> README.md && git add . && git commit -qm small -m 'Closes T-1'"
             )
         )
         result = _run(

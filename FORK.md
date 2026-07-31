@@ -159,7 +159,7 @@ Everything we add lives in files upstream does not own:
 | `speedbay/bin/gh` | `gh` shim; replaces the hardcoded `GH_TOKEN=dummy` with a real token |
 | `speedbay/bin/git-credential-openswe` | Git credential helper for `github.com` |
 | `speedbay/gitconfig` | Registers the credential helper; sets the bot git identity |
-| `speedbay/githooks/commit-msg` | Strips AI-attribution trailers from every commit |
+| `speedbay/githooks/commit-msg` | Strips AI-attribution trailers from every commit; rejects commits whose body lacks `Closes <TEAM>-NNN` |
 | `speedbay/run-dev.sh` | Backend launcher (env + shims); invoked by `openswe start` |
 | `speedbay/openswe` | **The lifecycle command**: `start` / `stop` / `status` — see § Operating |
 | `speedbay/set_model.py` | Reads/sets the agent's default model (no dashboard needed) |

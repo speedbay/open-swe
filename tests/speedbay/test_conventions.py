@@ -127,3 +127,16 @@ class TestWrapModelCall:
         assert len(seen) == 1
         assert seen[0].system_message is not None
         assert _MARKER in seen[0].system_message.text
+
+
+class TestBranchRule:
+    """OPE-58: the conventions text must countermand upstream's branch guidance."""
+
+    def test_names_the_team_nnn_slug_pattern(self) -> None:
+        assert "`<team>-NNN-<slug>`" in SPEEDBAY_CONVENTIONS
+
+    def test_prohibits_the_upstream_open_swe_prefix(self) -> None:
+        assert "Never `open-swe/<slug>`" in SPEEDBAY_CONVENTIONS
+        # Explicit override wording, since upstream's instruction appears
+        # earlier in the assembled prompt and must lose to this one.
+        assert "overrides" in SPEEDBAY_CONVENTIONS
