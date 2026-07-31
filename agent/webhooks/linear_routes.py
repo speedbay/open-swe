@@ -117,7 +117,7 @@ async def linear_webhook(  # noqa: PLR0911, PLR0912, PLR0915
     else:
         issue_description = full_issue.get("description") or ""
         if issue_description:
-            repo_config = common.extract_repo_from_text(issue_description)
+            repo_config = common.extract_repo_from_text(issue_description, allow_github_url=False)
         if repo_config:
             common.logger.debug(
                 "Using repo from issue body: %s/%s",

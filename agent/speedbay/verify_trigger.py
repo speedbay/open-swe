@@ -252,7 +252,9 @@ async def process_verify_dispatch(
     description = full_issue.get("description") or issue_data.get("description") or ""
     team = full_issue.get("team") or issue_data.get("team") or {}
     project = full_issue.get("project") or {}
-    repo_config = common.extract_repo_from_text(description) if description else None
+    repo_config = (
+        common.extract_repo_from_text(description, allow_github_url=False) if description else None
+    )
     if not repo_config:
         repo_config = common.get_repo_config_from_team_mapping(
             (team.get("name") or "").strip(), (project.get("name") or "").strip()

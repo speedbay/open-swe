@@ -345,7 +345,9 @@ def test_dispatch_body_without_declaration_preserves_team_mapping():
     # No repo: declaration in the body routes exactly as before.
     issue = _fixture_issue()
     full_issue = copy.deepcopy(issue)
-    full_issue["description"] = "An ordinary description with no repository declaration."
+    full_issue["description"] = (
+        "An ordinary description linking https://github.com/upstream/dependency/issues/1."
+    )
     captured = _run_dispatch(
         issue,
         full_issue=full_issue,

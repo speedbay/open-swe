@@ -272,6 +272,10 @@ class TestLinearWebhookRepoOverride:
                     "title": "Test issue",
                     "identifier": "TEST-1",
                     "url": "https://linear.app/test/issue/TEST-1",
+                    "description": (
+                        "Related upstream issue: "
+                        "https://github.com/langchain-ai/open-swe/issues/123"
+                    ),
                     "team": {"id": "t1", "name": "Open SWE", "key": "OS"},
                     "project": None,
                     "comments": {"nodes": []},
