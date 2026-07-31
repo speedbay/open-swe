@@ -275,6 +275,11 @@ async def process_verify_dispatch(
 
     identifier = full_issue.get("identifier", "") or issue_data.get("identifier", "")
     thread_id = common.generate_thread_id_from_issue(f"verify:{issue_id}")
+    # OPE-48: resolve the assignee email unconditionally so the thread-owner
+    # upsert below can attribute the verify thread to them (the dashboard's
+    # _owner_search_filters matches github_login / triggering_user_email).
+    # Lookup failures and unassigned issues yield None and dispatch unchanged.
+    assignee_email = await _assignee_email(issue_id)
     configurable: dict[str, Any] = {
         "repo": repo_config,
         "linear_issue": {
@@ -286,6 +291,10 @@ async def process_verify_dispatch(
             "linear_issue_number": identifier.split("-", 1)[1] if "-" in identifier else "",
             "triggering_user_name": "",
         },
+        # Run auth boundary (OPE-48): this must stay None. Setting it would
+        # resolve the assignee's GitHub OAuth token for the run (per-user
+        # token resolution); verification runs under the bot identity. The
+        # assignee attribution lives only in the thread-owner metadata below.
         "user_email": None,
         "source": "linear",
     }
@@ -295,7 +304,9 @@ async def process_verify_dispatch(
         source="linear",
         repo_config=repo_config,
         github_login="",
-        user_email="",
+        # Pass the email only — the upsert resolves the login internally via
+        # resolve_login_from_email_async; never resolve it here (OPE-48).
+        user_email=assignee_email or "",
         title=f"Verify: {identifier or issue_id}",
         source_context={"linear_issue": configurable["linear_issue"]},
     )
