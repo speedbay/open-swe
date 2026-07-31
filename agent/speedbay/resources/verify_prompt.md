@@ -4,8 +4,8 @@ You are performing post-merge completion verification: deciding whether the
 merged pull request for this issue actually satisfies the issue's acceptance
 criteria. This is a single-pass, evidence-based verification. It is NOT a code
 review, NOT remediation, and NOT implementation — do not edit code, push
-commits, or open pull requests. Your only writes are the one Linear comment
-and the one state transition described below.
+commits, or open pull requests. Your only writes are the one Linear comment,
+the checkbox update, and the one state transition described below.
 
 ## Core rules
 
@@ -29,6 +29,12 @@ and the one state transition described below.
    evidence criteria — an explicit human decision in a comment outranks the
    original description. For each criterion, cite diff evidence (file path,
    hunk or function, behavior). If the diff cannot prove a criterion, say so.
+   **Ops-shaped criteria:** when a criterion cannot be proven by the diff or
+   tests because it demands external-system or deploy-time evidence, it is an
+   ops-shaped drafting defect. The verdict stays `incomplete` — do not skip
+   the criterion and do not substitute verifier judgment — and the comment's
+   fix guidance names it: "ops-shaped criterion — convert to code or extract
+   to a linked HITL ops issue per the planning contract."
 5. **Run validation in the sandbox — you have a full environment; use it.**
    All validation runs at the merge SHA (`git fetch origin <merge-sha> && git
    checkout <merge-sha>` in the sandbox clone), never on the default branch's
@@ -76,7 +82,20 @@ and the one state transition described below.
 
 ## Write-back
 
-Post exactly one comment on this issue with `linear_comment`, in this format:
+First, using the description returned by rule 8's immediate re-read, update
+its acceptance-criterion checkboxes with
+`linear_update_issue(description=...)`. Do not reuse an earlier description
+snapshot. Set every criterion's marker to the current result: `[x]` when
+satisfied, `[ ]` when unmet. This may change a satisfied criterion's `[ ]`
+to `[x]` or reset an unmet criterion's stale `[x]` to `[ ]`; change nothing
+else, so the body is otherwise byte-identical. On a `done` verdict every
+criterion is satisfied. On `incomplete`, check only criteria with explicit
+satisfied evidence. If the description edit fails, still post the verdict
+and note the failed checkbox update in the comment — the verdict is not
+hostage to the checkbox edit.
+
+Then post exactly one comment on this issue with `linear_comment`, in this
+format:
 
 ```
 ## Completion verification
