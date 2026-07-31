@@ -59,6 +59,7 @@ from .gate_approval import (
     gate_fingerprint,
     get_gate_approvals,
     mark_gate_approval_notified,
+    pr_metadata_digest,
 )
 from .quality_gates import _tool_args, _tool_call_id, _tool_name, resolve_repo_dir
 from .rules.atomicity import check_atomicity, parse_numstat
@@ -453,6 +454,7 @@ class PRStandardsMiddleware(AgentMiddleware):
             verdict=verdict,
             violations=violations,
             failed_rule_ids=[str(rule) for rule in failed_rule_ids],
+            metadata_digest=pr_metadata_digest(title, body, branch),
             evidence=_evidence_tail(numstat),
             advice=advice,
         )
@@ -471,6 +473,7 @@ class PRStandardsMiddleware(AgentMiddleware):
         verdict: Any,
         violations: tuple[Any, ...],
         failed_rule_ids: list[str],
+        metadata_digest: str,
         evidence: str,
         advice: list[str],
     ) -> ToolMessage | None:
@@ -484,7 +487,7 @@ class PRStandardsMiddleware(AgentMiddleware):
             if shas is None:
                 raise RuntimeError("could not resolve base/head SHAs")
             base_sha, head_sha = shas
-            fingerprint = gate_fingerprint(base_sha, head_sha, failed_rule_ids)
+            fingerprint = gate_fingerprint(base_sha, head_sha, failed_rule_ids, metadata_digest)
             terminal = (await get_gate_approvals(thread_id)).get(fingerprint, {})
             terminal_status = terminal.get("status")
             approval_url = dashboard_gate_approval_url(thread_id, fingerprint)

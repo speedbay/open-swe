@@ -65,16 +65,34 @@ def dashboard_gate_approval_url(thread_id: str, fingerprint: str) -> str | None:
     return f"{thread_url}?gateApproval={quote(fingerprint, safe='')}"
 
 
-def gate_fingerprint(base_sha: str, head_sha: str, failed_rule_ids: list[str]) -> str:
-    """Fingerprint binding the exact diff (base + head) and the failed rules.
+def pr_metadata_digest(title: str, body: str, branch: str) -> str:
+    """Digest of the mutable PR metadata the hygiene rules evaluate.
 
-    Per ``WorkflowPushChange``: an approval covers exactly one diff — any
-    new commit changes the head SHA and re-gates.
+    Bound into the fingerprint so an approval covers the exact content a
+    human reviewed: hygiene violations are judged from title/body/branch,
+    which are request arguments — not part of the diff's git state — so
+    without this a retry with different content hitting the same rule id
+    would silently consume a prior approval.
+    """
+    encoded = json.dumps([title, body, branch], separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def gate_fingerprint(
+    base_sha: str, head_sha: str, failed_rule_ids: list[str], metadata_digest: str
+) -> str:
+    """Fingerprint binding the exact gated content: diff, rules, PR metadata.
+
+    Per ``WorkflowPushChange``: an approval covers exactly one diff — any new
+    commit changes the head SHA and re-gates. ``metadata_digest``
+    (``pr_metadata_digest``) additionally binds the evaluated title/body/
+    branch, so edited PR content re-gates even on an unchanged diff.
     """
     payload = {
         "base_sha": base_sha,
         "head_sha": head_sha,
         "failed_rule_ids": sorted(failed_rule_ids),
+        "metadata_digest": metadata_digest,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()

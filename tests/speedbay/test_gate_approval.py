@@ -140,15 +140,20 @@ def _wire_gate(
     monkeypatch.setattr(fg, "get_config", lambda: {"configurable": configurable})
 
 
-def _request() -> Any:
+REQUEST_TITLE = "OPE-10: add the pause"
+REQUEST_BODY = (
+    "Closes OPE-10\n\n## Why needed\nx\n\n## Solved / fixed\nx\n\n"
+    "## Workflow enabled / fixed\nx\n\n## Verification\nx\n"
+)
+REQUEST_BRANCH = "ope-10-gate-breach"
+
+
+def _request(body: str = REQUEST_BODY) -> Any:
     args = {
         "base": "main",
-        "head": "ope-10-gate-breach",
-        "title": "OPE-10: add the pause",
-        "body": (
-            "Closes OPE-10\n\n## Why needed\nx\n\n## Solved / fixed\nx\n\n"
-            "## Workflow enabled / fixed\nx\n\n## Verification\nx\n"
-        ),
+        "head": REQUEST_BRANCH,
+        "title": REQUEST_TITLE,
+        "body": body,
     }
 
     class Request:
@@ -174,7 +179,8 @@ def _payload(result: Any) -> dict[str, Any]:
     return json.loads(str(result.content))
 
 
-FP = ga.gate_fingerprint("b" * 40, "h" * 40, ["atomicity"])
+DIGEST = ga.pr_metadata_digest(REQUEST_TITLE, REQUEST_BODY, REQUEST_BRANCH)
+FP = ga.gate_fingerprint("b" * 40, "h" * 40, ["atomicity"], DIGEST)
 
 
 # --- record-before-notify, post-once (AC 1) -----------------------------------
@@ -384,7 +390,7 @@ def test_approval_is_thread_and_fingerprint_bound(monkeypatch) -> None:
     _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner"))
 
     assert _run(ga.consume_gate_approval("t-2", FP)) is False  # other thread
-    other = ga.gate_fingerprint("b" * 40, "d" * 40, ["atomicity"])
+    other = ga.gate_fingerprint("b" * 40, "d" * 40, ["atomicity"], DIGEST)
     assert _run(ga.consume_gate_approval("t-1", other)) is False  # other fingerprint
     assert _run(ga.decide_gate_approval("t-2", FP, approved=True, actor="owner")) is None
     assert _run(ga.consume_gate_approval("t-1", FP)) is True  # the real one works
@@ -586,7 +592,7 @@ def test_fingerprint_binds_the_diffed_base_ref(monkeypatch, caplog) -> None:
     assert not any("rev-parse origin/main" in c for c in rev_parses)
     record = client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY]
     (fingerprint,) = record.keys()
-    assert fingerprint == ga.gate_fingerprint("b" * 40, "h" * 40, ["atomicity"])
+    assert fingerprint == ga.gate_fingerprint("b" * 40, "h" * 40, ["atomicity"], DIGEST)
 
 
 def test_stale_notify_mark_does_not_suppress_new_cycle(monkeypatch) -> None:
@@ -637,3 +643,30 @@ def test_escalation_advice_reflects_failed_linear_post(monkeypatch) -> None:
     assert "no further surfacing is needed" not in payload["error"]
     assert "could NOT post its Linear comment" in payload["error"]
     assert "surface this gate failure to a human" in payload["error"]
+
+
+def test_approval_is_content_bound_not_just_diff_bound(monkeypatch) -> None:
+    """An approval covers the exact PR content a human reviewed: the same diff
+    and rule ids with a different body must not consume the exemption."""
+    client, linear = FakeLangGraphClient(), FakeLinear()
+    _wire_store(monkeypatch, client)
+    _wire_linear(monkeypatch, linear)
+    _wire_gate(monkeypatch, _gate_backend())
+
+    middleware = PRStandardsMiddleware()
+    for _ in range(3):  # escalate the reviewed content to the pause
+        _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+    _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner"))
+
+    # Same diff SHAs, same failed rule ids, different body content: a distinct
+    # fingerprint — the approval for the reviewed content is NOT consumed.
+    payload = _payload(
+        _run(
+            middleware.awrap_tool_call(_request(body=REQUEST_BODY + "unreviewed\n"), _fail_handler)
+        )
+    )
+    assert payload["code"] == "pr_standards_failed"
+    record = client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY][FP]
+    assert record["status"] == ga.GATE_APPROVAL_APPROVED  # untouched
+    # The reviewed content itself still passes on its one-time exemption.
+    assert _run(middleware.awrap_tool_call(_request(), _pass_handler)) == "pr-opened"
