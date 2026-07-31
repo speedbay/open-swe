@@ -245,11 +245,18 @@ async def process_verify_dispatch(
         return False
     full_issue = await common.fetch_linear_issue_details(issue_id) or issue_data
 
+    # Repo resolution precedence: issue-body ``repo:owner/name`` declaration
+    # (OPE-49) > team/project mapping > team default. Verify dispatches carry
+    # no comment, so the comment-text override can never apply here; the
+    # allowlist below still gates the body-declared repo.
+    description = full_issue.get("description") or issue_data.get("description") or ""
     team = full_issue.get("team") or issue_data.get("team") or {}
     project = full_issue.get("project") or {}
-    repo_config = common.get_repo_config_from_team_mapping(
-        (team.get("name") or "").strip(), (project.get("name") or "").strip()
-    )
+    repo_config = common.extract_repo_from_text(description) if description else None
+    if not repo_config:
+        repo_config = common.get_repo_config_from_team_mapping(
+            (team.get("name") or "").strip(), (project.get("name") or "").strip()
+        )
     if not repo_config:
         repo_config = await common.get_team_default_repo()
     if not repo_config:
