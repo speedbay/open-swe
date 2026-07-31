@@ -203,6 +203,7 @@ def _run_dispatch(
     allowed: bool = True,
     verdict_states: dict[str, str] | None = None,
     multitask_strategy: MultitaskStrategy = "interrupt",
+    assignee_email: str | None = None,
 ) -> dict[str, Any]:
     captured: dict[str, Any] = {}
 
@@ -217,7 +218,7 @@ def _run_dispatch(
         return {"run_id": "run-1"}
 
     async def fake_upsert(thread_id, **kwargs):
-        captured["upsert_title"] = kwargs.get("title")
+        captured["upsert_kwargs"] = kwargs
 
     with (
         patch.object(
@@ -243,6 +244,12 @@ def _run_dispatch(
             "_verdict_state_ids",
             new_callable=AsyncMock,
             return_value=verdict_states or {},
+        ),
+        patch.object(
+            verify_trigger,
+            "_assignee_email",
+            new_callable=AsyncMock,
+            return_value=assignee_email,
         ),
         patch.object(verify_trigger.common, "dispatch_agent_run", side_effect=fake_dispatch),
         patch.object(
@@ -308,8 +315,41 @@ def test_dispatch_builds_verify_prompt_on_distinct_thread():
     assert "Please analyze this issue and implement" not in prompt
     assert captured["configurable"]["repo"] == {"owner": "speedbay", "name": "warehouse"}
     assert captured["configurable"]["linear_issue"]["identifier"] == "OPE-41"
-    assert captured["upsert_title"] == "Verify: OPE-41"
+    assert captured["upsert_kwargs"]["title"] == "Verify: OPE-41"
     assert captured["trace_called"] == 0  # single-comment write-back: no "On it!"
+
+
+def test_unassigned_issue_dispatches_with_empty_attribution():
+    # OPE-48 AC2: no assignee email -> the owner upsert carries empty
+    # attribution (today's behavior) and the run still dispatches.
+    issue = _fixture_issue()
+    captured = _run_dispatch(
+        issue,
+        full_issue=issue,
+        team_repo={"owner": "speedbay", "name": "warehouse"},
+        assignee_email=None,
+    )
+    assert captured["dispatched"] is True
+    assert captured["upsert_kwargs"]["user_email"] == ""
+    assert captured["upsert_kwargs"]["github_login"] == ""
+
+
+def test_assignee_attributed_on_thread_upsert_only():
+    # OPE-48 AC3: the thread upsert carries the assignee email (login stays
+    # empty — the upsert resolves it internally) while run auth is unchanged:
+    # configurable["user_email"] must remain None so the run keeps the bot
+    # identity instead of the assignee's GitHub OAuth token.
+    issue = _fixture_issue()
+    captured = _run_dispatch(
+        issue,
+        full_issue=issue,
+        team_repo={"owner": "speedbay", "name": "warehouse"},
+        assignee_email="Owner@speedbay.com",
+    )
+    assert captured["dispatched"] is True
+    assert captured["upsert_kwargs"]["user_email"] == "Owner@speedbay.com"
+    assert captured["upsert_kwargs"]["github_login"] == ""
+    assert captured["configurable"]["user_email"] is None
 
 
 def test_dispatch_forwards_noninterrupting_strategy():
