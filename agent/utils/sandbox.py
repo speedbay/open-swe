@@ -81,3 +81,8 @@ def validate_sandbox_startup_config() -> None:
         from agent.speedbay.docker_sandbox import validate_startup_config
 
         validate_startup_config()
+        # SPEEDBAY REGISTRATION (OPE-53): ensure the hourly verify-sweep cron
+        # idempotently at boot; background task, failure never blocks boot.
+        from agent.speedbay.verify_sweep_cron import schedule_verify_sweep_cron_ensure
+
+        schedule_verify_sweep_cron_ensure()

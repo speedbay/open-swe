@@ -29,10 +29,10 @@ all survived, and re-add any a merge dropped (each is marked in-code with a
 |---|---|---|
 | 1 | `"docker"` entry for the Docker sandbox backend | the `SANDBOX_FACTORIES` dict in `agent/utils/sandbox.py` |
 | 2 | `SpeedbayConventionsMiddleware`, `PRStandardsMiddleware`, and `QualityGatesMiddleware` in the `middleware=[...]` list | the list inside `get_agent()` in `agent/server.py`, plus their direct imports above |
-| 3 | `docker` branch calling `validate_startup_config()` | inside `validate_sandbox_startup_config()` in `agent/utils/sandbox.py` |
+| 3 | `docker` branch calling `validate_startup_config()` (OPE-7), which also schedules the boot-time verify-sweep cron ensure (OPE-53) | inside `validate_sandbox_startup_config()` in `agent/utils/sandbox.py`; cron-ensure logic lives in `agent/speedbay/verify_sweep_cron.py` |
 | 4 | `strip_server_runtime(...)` on the factory config (OPE-15) | `traced_graph_factory` in `agent/utils/tracing.py` + `get_scheduler` in `agent/scheduler.py`; any NEW langgraph.json graph that bypasses `traced_graph_factory` must add the strip |
 | 5 | `speedbay_verify_trigger.maybe_handle(...)` verify-transition hook (OPE-39) | inside `linear_webhook()` in `agent/webhooks/linear_routes.py`, immediately after JSON parsing and before the Comment-type filter, plus its import above; logic lives in `agent/speedbay/verify_trigger.py` |
-| 6 | `task == "verify_sweep"` scheduler branch (OPE-42) | inside `_launch()` in `agent/scheduler.py`, after the `reconcile` branch; logic lives in `agent/speedbay/verify_sweep.py`. Provision the hourly cron with `speedbay/ensure_verify_sweep_cron.py` |
+| 6 | `task == "verify_sweep"` scheduler branch (OPE-42) | inside `_launch()` in `agent/scheduler.py`, after the `reconcile` branch; logic lives in `agent/speedbay/verify_sweep.py`. The hourly cron is ensured idempotently at boot (registration #3); `speedbay/ensure_verify_sweep_cron.py` is list/inspect only |
 
 Identified by symbol, not `file:line` — the middleware list moved from :946 to :953 on the very first upstream merge.
 
