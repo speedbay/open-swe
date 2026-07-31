@@ -253,15 +253,19 @@ def _classify_failure(exit_code: int | None, output: str) -> str:
     return "failure"
 
 
-async def run_quality_gates(backend: Any, changed_paths: Sequence[str]) -> GateFailure | None:
+async def run_quality_gates(
+    backend: Any, changed_paths: Sequence[str], repo_dir: str
+) -> GateFailure | None:
     """Run every selected project's gate commands; return the first failure.
 
     ``backend`` satisfies the deepagents async sandbox contract
     (``await backend.aexecute(command, timeout=...) -> ExecuteResponse`` —
     the thread-offloading async surface every ``BaseSandbox`` provides).
-    Commands run from the project root under ``/workspace``. Gate commands
-    with ``paths`` filters run only when a project-relative changed path
-    matches.
+    Commands run from the project root under ``repo_dir`` — the resolved repo
+    clone (see ``resolve_repo_dir``), not ``/workspace`` itself: the agent
+    clones into ``/workspace/<repo>``, and ``PROJECT_QUALITY_GATES`` keys are
+    directories inside that clone (OPE-59). Gate commands with ``paths``
+    filters run only when a project-relative changed path matches.
     """
     selected = touched_projects(changed_paths)
     unconfigured = {
@@ -283,7 +287,7 @@ async def run_quality_gates(backend: Any, changed_paths: Sequence[str]) -> GateF
             # final error lines the agent needs. `tail -c` bounds output before
             # the backend ever sees it; pipefail preserves the exit code.
             full = (
-                f"cd {WORKSPACE}/{project} && set -o pipefail && "
+                f"cd {shlex.quote(f'{repo_dir}/{project}')} && set -o pipefail && "
                 f"( {gate.command} ) 2>&1 | tail -c {OUTPUT_TAIL_CHARS}"
             )
             response = await backend.aexecute(full, timeout=COMMAND_TIMEOUT_SECONDS)
@@ -302,9 +306,52 @@ async def run_quality_gates(backend: Any, changed_paths: Sequence[str]) -> GateF
     return None
 
 
-async def _changed_paths(backend: Any, base: str, head: str = "HEAD") -> list[str] | None:
+async def resolve_repo_dir(backend: Any, configurable: dict[str, Any]) -> str | None:
+    """Directory of the run's repo clone under ``WORKSPACE``, or None.
+
+    The agent clones with ``gh repo clone <owner>/<repo>`` (prompt.py), which
+    creates ``/workspace/<name>`` — ``/workspace`` itself is never a git repo,
+    which is why gate diffs must run against this resolved directory (OPE-59).
+    The declared repo travels in ``configurable["repo"]``, resolved from the
+    triggering Linear issue/comment per the OPE-49 precedence, so the clone
+    may be open-swe, warehouse, or any allowlisted repo. Resolution order:
+
+    1. ``{WORKSPACE}/{configurable["repo"]["name"]}`` when the sandbox
+       confirms it is a git worktree (``git -C <dir> rev-parse``).
+    2. Discovery fallback: exactly one ``/workspace/*/.git`` → its parent.
+    3. None — zero or multiple clones and no usable declaration; callers keep
+       their fail-open pass but must log at error level (a silently disabled
+       gate is exactly the outage this helper exists to prevent).
+
+    The directory is shell-quoted here and by callers: the name originates in
+    issue/comment text (model- and author-controlled).
+    """
+    repo = configurable.get("repo")
+    name = repo.get("name") if isinstance(repo, dict) else None
+    if isinstance(name, str) and name.strip():
+        candidate = f"{WORKSPACE}/{name.strip()}"
+        response = await backend.aexecute(
+            f"git -C {shlex.quote(candidate)} rev-parse --is-inside-work-tree",
+            timeout=DIFF_TIMEOUT_SECONDS,
+        )
+        if getattr(response, "exit_code", None) == 0:
+            return candidate
+    response = await backend.aexecute(f"ls -d {WORKSPACE}/*/.git", timeout=DIFF_TIMEOUT_SECONDS)
+    if getattr(response, "exit_code", None) == 0:
+        entries = [
+            line.strip()
+            for line in (getattr(response, "output", "") or "").splitlines()
+            if line.strip().endswith("/.git")
+        ]
+        if len(entries) == 1:
+            return entries[0].removesuffix("/.git")
+    return None
+
+
+async def _changed_paths(backend: Any, base: str, head: str, repo_dir: str) -> list[str] | None:
     """Changed file paths of the requested PR head vs the PR base, or None.
 
+    Runs inside ``repo_dir`` (the resolved clone — see ``resolve_repo_dir``).
     Diffs the requested ``head`` ref (not the sandbox's current checkout,
     which may have moved after the push). Tries ``origin/<base>`` first (the
     push target), then ``<base>``; None means the diff could not be computed
@@ -314,7 +361,8 @@ async def _changed_paths(backend: Any, base: str, head: str = "HEAD") -> list[st
     """
     for ref in (f"origin/{base}", base):
         response = await backend.aexecute(
-            f"cd {WORKSPACE} && git diff --name-only {shlex.quote(ref)}...{shlex.quote(head)}",
+            f"git -C {shlex.quote(repo_dir)} diff --name-only "
+            f"{shlex.quote(ref)}...{shlex.quote(head)}",
             timeout=DIFF_TIMEOUT_SECONDS,
         )
         if getattr(response, "exit_code", None) == 0:
@@ -424,11 +472,21 @@ class QualityGatesMiddleware(AgentMiddleware):
                 logger.warning("quality gates: no thread_id in run config — passing")
                 return None
             backend = await get_sandbox_backend(str(thread_id))
-            changed = await _changed_paths(backend, base, head)
-            if changed is None:
-                logger.warning("quality gates: could not diff against base %r — passing", base)
+            repo_dir = await resolve_repo_dir(backend, configurable)
+            if repo_dir is None:
+                logger.error(
+                    "quality gates: no repo clone found under %s (declared: %r) — passing",
+                    WORKSPACE,
+                    (configurable.get("repo") or {}).get("name"),
+                )
                 return None
-            failure = await run_quality_gates(backend, changed)
+            changed = await _changed_paths(backend, base, head, repo_dir)
+            if changed is None:
+                logger.error(
+                    "quality gates: could not diff %r against base %r — passing", repo_dir, base
+                )
+                return None
+            failure = await run_quality_gates(backend, changed, repo_dir)
         except Exception:
             # ponytail: infrastructure fault in the gate itself must not
             # permanently block PR creation — log loudly and fail open.

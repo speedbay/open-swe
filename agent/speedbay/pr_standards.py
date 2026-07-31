@@ -40,7 +40,7 @@ from ..utils.sandbox_state import get_sandbox_backend
 # Tunable settings live in config.py (OPE-31); both gates share the sandbox
 # workspace root and diff timeout through it.
 from .config import DIFF_TIMEOUT_SECONDS, MAX_CORRECTIVE_ROUNDS, WORKSPACE
-from .quality_gates import _tool_args, _tool_call_id, _tool_name
+from .quality_gates import _tool_args, _tool_call_id, _tool_name, resolve_repo_dir
 from .rules.atomicity import check_atomicity, parse_numstat
 from .rules.hygiene import check_attribution, check_hygiene
 
@@ -53,16 +53,20 @@ _FALLBACK_ERROR = (
 )
 
 
-async def _numstat(backend: Any, base: str, head: str) -> tuple[str, bool] | None:
+async def _numstat(backend: Any, base: str, head: str, repo_dir: str) -> tuple[str, bool] | None:
     """``git diff --numstat`` of ``head`` vs the PR base, or None if undiffable.
 
-    Mirrors quality_gates ``_changed_paths``: tries ``origin/<base>`` (the push
-    target) then ``<base>``; refs are shell-quoted (model-controlled args).
+    Runs inside ``repo_dir`` — the resolved repo clone under ``/workspace``
+    (see quality_gates ``resolve_repo_dir``), never ``/workspace`` itself,
+    which is not a git repo (OPE-59). Mirrors quality_gates ``_changed_paths``:
+    tries ``origin/<base>`` (the push target) then ``<base>``; refs and the
+    directory are shell-quoted (model- and issue-controlled args).
     Returns ``(output, truncated)`` — truncated output is missing rows.
     """
     for ref in (f"origin/{base}", base):
         response = await backend.aexecute(
-            f"cd {WORKSPACE} && git diff --numstat {shlex.quote(ref)}...{shlex.quote(head)}",
+            f"git -C {shlex.quote(repo_dir)} diff --numstat "
+            f"{shlex.quote(ref)}...{shlex.quote(head)}",
             timeout=DIFF_TIMEOUT_SECONDS,
         )
         if getattr(response, "exit_code", None) == 0:
@@ -168,9 +172,21 @@ class PRStandardsMiddleware(AgentMiddleware):
                 logger.warning("PR standards gate: no thread_id in run config — passing")
                 return None
             backend = await get_sandbox_backend(str(thread_id))
-            diff = await _numstat(backend, base, branch)
+            repo_dir = await resolve_repo_dir(backend, configurable)
+            if repo_dir is None:
+                logger.error(
+                    "PR standards gate: no repo clone found under %s (declared: %r) — passing",
+                    WORKSPACE,
+                    (configurable.get("repo") or {}).get("name"),
+                )
+                return None
+            diff = await _numstat(backend, base, branch, repo_dir)
             if diff is None:
-                logger.warning("PR standards gate: could not diff against base %r — passing", base)
+                logger.error(
+                    "PR standards gate: could not diff %r against base %r — passing",
+                    repo_dir,
+                    base,
+                )
                 return None
             numstat, truncated = diff
             verdict = check_atomicity(parse_numstat(numstat))
