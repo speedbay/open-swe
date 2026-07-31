@@ -15,6 +15,7 @@ import {
 } from "@/features/agents/components/AgentGitPanel"
 import { AgentPromptBar } from "@/features/agents/components/AgentPromptBar"
 import { WorkflowApprovalCard } from "@/features/agents/components/WorkflowApprovalCard"
+import { GateApprovalCard } from "@/features/agents/components/GateApprovalCard"
 import {
   readStoredPanelCollapsed,
   writeStoredPanelCollapsed,
@@ -170,6 +171,7 @@ export function AgentThreadView({ thread }: AgentThreadViewProps) {
           threadId={thread.id}
           pollWhileActive={isStreaming}
         />
+        <GateApprovalCard threadId={thread.id} pollWhileActive={isStreaming} />
         {thread.planStatus &&
           thread.planStatus !== "approved" &&
           thread.planStatus !== "cancelled" && (

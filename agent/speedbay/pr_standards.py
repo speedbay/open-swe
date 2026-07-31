@@ -13,9 +13,15 @@ forms) runs on both paths so nothing routes around the gate.
 Fail-open for infrastructure problems only (no thread id, unreachable
 sandbox, undiffable base), per quality_gates; rule verdicts always block, and
 a truncated numstat blocks as oversized (missing rows would undercount).
-Corrective rounds are bounded: after ``MAX_CORRECTIVE_ROUNDS`` blocks on one
-thread the message flips to escalation (``recoverable_by_agent: false``); the
-human approval-pause wiring lands in OPE-10.
+Corrective rounds are bounded: the round counter is durable (per-fingerprint
+record in thread metadata, ``gate_approval.bump_gate_rounds`` — survives
+backend restarts), and after ``MAX_CORRECTIVE_ROUNDS`` blocks on one diff the
+run pauses for human approval (OPE-10): the middleware records a durable
+pending approval **before** posting the Linear escalation comment itself
+(post-once via ``notified``, error-level log on failure), then returns a
+blocking ToolMessage (``recoverable_by_agent: false``). A dashboard approve
+grants a one-time, fingerprint-bound exemption; ``consume_gate_approval``
+spends it on the next gate attempt, and a new commit re-gates.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import shlex
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 import attrs
@@ -35,16 +41,32 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from ..middleware.pr_creation_guard import is_pr_creation_fallback_command
+from ..utils.dashboard_links import dashboard_gate_approval_url
+from ..utils.linear import comment_on_linear_issue
 from ..utils.sandbox_state import get_sandbox_backend
 
 # Tunable settings live in config.py (OPE-31); both gates share the sandbox
 # workspace root and diff timeout through it.
 from .config import DIFF_TIMEOUT_SECONDS, MAX_CORRECTIVE_ROUNDS, WORKSPACE
+from .gate_approval import (
+    GATE_APPROVAL_APPROVED,
+    GATE_APPROVAL_PENDING,
+    GATE_APPROVAL_REJECTED,
+    bump_gate_rounds,
+    consume_gate_approval,
+    ensure_gate_approval_pending,
+    gate_approval_status,
+    gate_fingerprint,
+    get_gate_approvals,
+    mark_gate_approval_notified,
+)
 from .quality_gates import _tool_args, _tool_call_id, _tool_name, resolve_repo_dir
 from .rules.atomicity import check_atomicity, parse_numstat
 from .rules.hygiene import check_attribution, check_hygiene
 
 logger = logging.getLogger(__name__)
+
+_EVIDENCE_TAIL_CHARS = 2000
 
 _FALLBACK_ERROR = (
     "New pull requests must be opened with the open_pull_request tool so the "
@@ -75,6 +97,35 @@ async def _numstat(backend: Any, base: str, head: str, repo_dir: str) -> tuple[s
     return None
 
 
+async def _rev_parse(backend: Any, repo_dir: str, ref: str) -> str | None:
+    """Resolve ``ref`` to a full SHA inside the sandbox, or None."""
+    try:
+        response = await backend.aexecute(
+            f"git -C {shlex.quote(repo_dir)} rev-parse {shlex.quote(ref)}",
+            timeout=DIFF_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        return None
+    if getattr(response, "exit_code", None) != 0:
+        return None
+    output = (getattr(response, "output", "") or "").strip().splitlines()
+    sha = output[0].strip() if output else ""
+    return sha or None
+
+
+async def _base_and_head_shas(
+    backend: Any, base: str, head: str, repo_dir: str
+) -> tuple[str, str] | None:
+    """The SHAs the fingerprint binds; None when unresolvable (fail open)."""
+    head_sha = await _rev_parse(backend, repo_dir, head)
+    base_sha = await _rev_parse(backend, repo_dir, f"origin/{base}")
+    if base_sha is None:
+        base_sha = await _rev_parse(backend, repo_dir, base)
+    if not head_sha or not base_sha:
+        return None
+    return base_sha, head_sha
+
+
 def _force_ready_for_review(request: ToolCallRequest) -> ToolCallRequest:
     """Copy a gate-passing ``open_pull_request`` request with ``draft: False``.
 
@@ -99,6 +150,139 @@ def _issue_id(configurable: dict[str, Any]) -> str | None:
     return identifier if isinstance(identifier, str) and identifier.strip() else None
 
 
+def _issue_uuid(configurable: Mapping[str, Any]) -> str | None:
+    """The triggering Linear issue UUID — the id ``comment_on_linear_issue`` needs."""
+    linear_issue = configurable.get("linear_issue") or {}
+    uuid = linear_issue.get("id") if isinstance(linear_issue, dict) else None
+    return uuid if isinstance(uuid, str) and uuid.strip() else None
+
+
+def _evidence_tail(numstat: str) -> str:
+    return numstat[-_EVIDENCE_TAIL_CHARS:] if numstat else ""
+
+
+def _block_message(
+    request: ToolCallRequest,
+    *,
+    advice: list[str],
+    verdict: Any,
+    violations: tuple[Any, ...],
+    rounds: int,
+    escalate: bool,
+    fingerprint: str | None = None,
+    approval_url: str | None = None,
+    approval_status: str | None = None,
+) -> ToolMessage:
+    content: dict[str, Any] = {
+        "status": "error",
+        "error_type": "PRStandardsFailed",
+        "code": "pr_standards_failed",
+        "recoverable_by_agent": not escalate,
+        "error": " ".join(advice),
+        "atomicity": {
+            "passed": verdict.passed,
+            "raw_loc": verdict.raw_loc,
+            "effective_loc": verdict.effective_loc,
+            "production_files": verdict.production_files,
+            "exceeded": list(verdict.exceeded),
+        },
+        "hygiene_violations": [{"rule": v.rule, "message": v.message} for v in violations],
+        "corrective_round": rounds,
+        "escalation_required": escalate,
+    }
+    if fingerprint is not None:
+        content["gate_approval"] = {
+            "fingerprint": fingerprint,
+            "status": approval_status,
+            "approval_url": approval_url,
+        }
+    return ToolMessage(
+        content=json.dumps(content), tool_call_id=_tool_call_id(request), status="error"
+    )
+
+
+def _gate_escalation_linear_comment(
+    record: dict[str, Any],
+    *,
+    thread_id: str,
+) -> str:
+    raw_stats: Any = record.get("diff_stats")
+    stats: dict[str, Any] = raw_stats if isinstance(raw_stats, dict) else {}
+    exceeded = stats.get("exceeded") if isinstance(stats.get("exceeded"), list) else []
+    failed = record.get("failed_rule_ids")
+    failed = [str(rule) for rule in failed] if isinstance(failed, list) else []
+    approval_url = record.get("approval_url")
+    issue_label = record.get("issue_identifier") or record.get("issue_id") or ""
+    heading = "**PR-standards gate breach — human approval required**"
+    if isinstance(issue_label, str) and issue_label:
+        heading = f"**PR-standards gate breach on {issue_label} — human approval required**"
+    lines = [
+        heading,
+        "",
+        "The agent could not satisfy the PR gates within "
+        f"{MAX_CORRECTIVE_ROUNDS} corrective rounds and the run is paused.",
+        "",
+        f"- Raw LOC: {stats.get('raw_loc', 0)} · effective LOC: "
+        f"{stats.get('effective_loc', 0)} · production files: "
+        f"{stats.get('production_files', 0)}",
+    ]
+    if exceeded:
+        lines.append(f"- Exceeded caps: {'; '.join(str(item) for item in exceeded)}")
+    if failed:
+        lines.append(f"- Failed rules: {', '.join(f'`{rule}`' for rule in failed)}")
+    lines.append(f"- Fingerprint: `{record.get('fingerprint')}` (thread `{thread_id}`)")
+    if isinstance(approval_url, str) and approval_url:
+        lines.extend(["", f"Approve or reject: {approval_url}"])
+    lines.extend(
+        [
+            "",
+            "Approving grants a one-time exemption for exactly this diff — any new "
+            "commit re-gates. Rejecting ends the escalation; split the change instead.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+async def _notify_gate_escalation(
+    thread_id: str,
+    fingerprint: str,
+    record: dict[str, Any],
+    *,
+    created: bool = False,
+) -> None:
+    """Post-once Linear surfacing; never blocks the durable record."""
+    # A freshly created record is always notified even if a stale store fault
+    # left it with a stray `notified` flag (post-once for a given record).
+    if record.get("notified") is True and not created:
+        return
+    issue_id = record.get("issue_id")
+    if not isinstance(issue_id, str) or not issue_id:
+        logger.error(
+            "gate approval: escalation for thread %s fingerprint %s has no Linear "
+            "issue id — breach is only visible in the dashboard pending list",
+            thread_id,
+            fingerprint,
+        )
+        return
+    try:
+        ok = await comment_on_linear_issue(
+            issue_id, _gate_escalation_linear_comment(record, thread_id=thread_id)
+        )
+    except Exception:
+        ok = False
+    if not ok:
+        logger.error(
+            "gate approval: failed to post escalation comment to %s for thread %s "
+            "(approval URL: %s) — the breach stays discoverable in the dashboard "
+            "pending-approvals list",
+            issue_id,
+            thread_id,
+            record.get("approval_url"),
+        )
+        return
+    await mark_gate_approval_notified(thread_id, fingerprint)
+
+
 class PRStandardsMiddleware(AgentMiddleware):
     """Block non-compliant ``open_pull_request`` calls and shell PR fallbacks."""
 
@@ -106,9 +290,10 @@ class PRStandardsMiddleware(AgentMiddleware):
 
     def __init__(self) -> None:
         super().__init__()
-        # ponytail: in-memory per-process round counter keyed by thread id;
-        # OPE-10 moves escalation state to the durable approval pause.
-        self._rounds: dict[str, int] = {}
+        # In-process rounds fallback, used only when the durable thread-metadata
+        # store faults (logged at error): keeps corrective rounds bounded for the
+        # active run instead of jumping straight to escalation advice.
+        self._fallback_rounds: dict[str, int] = {}
 
     def _fallback_block(self, request: ToolCallRequest) -> ToolMessage | None:
         if _tool_name(request) != "execute":
@@ -217,12 +402,11 @@ class PRStandardsMiddleware(AgentMiddleware):
             return None
 
         if verdict.passed and not violations:
-            self._rounds.pop(str(thread_id), None)
+            if isinstance(thread_id, str) and thread_id:
+                self._fallback_rounds.pop(thread_id, None)
             return None
 
-        rounds = self._rounds.get(str(thread_id), 0) + 1
-        self._rounds[str(thread_id)] = rounds
-        escalate = rounds >= MAX_CORRECTIVE_ROUNDS
+        failed_rule_ids = ["atomicity"] * (not verdict.passed) + [v.rule for v in violations]
         advice: list[str] = []
         if not verdict.passed:
             advice.append(
@@ -236,34 +420,146 @@ class PRStandardsMiddleware(AgentMiddleware):
                 + "; ".join(f"[{v.rule}] {v.message}" for v in violations)
                 + ". Fix the PR title/body/branch and retry."
             )
-        if escalate:
-            advice.append(
-                f"This was corrective round {rounds} of {MAX_CORRECTIVE_ROUNDS}: stop "
-                "retrying and surface the gate failure to a human for approval."
-            )
-        logger.info(
-            "PR standards gate: blocking open_pull_request (round %d) — atomicity=%s hygiene=%s",
-            rounds,
-            verdict.exceeded,
-            [v.rule for v in violations],
+        return await self._durable_block(
+            request,
+            thread_id=str(thread_id),
+            backend=backend,
+            repo_dir=repo_dir,
+            base=base,
+            branch=branch,
+            issue_id=issue_id,
+            issue_uuid=_issue_uuid(configurable),
+            verdict=verdict,
+            violations=violations,
+            failed_rule_ids=[str(rule) for rule in failed_rule_ids],
+            evidence=_evidence_tail(numstat),
+            advice=advice,
         )
-        content = {
-            "status": "error",
-            "error_type": "PRStandardsFailed",
-            "code": "pr_standards_failed",
-            "recoverable_by_agent": not escalate,
-            "error": " ".join(advice),
-            "atomicity": {
-                "passed": verdict.passed,
+
+    async def _durable_block(
+        self,
+        request: ToolCallRequest,
+        *,
+        thread_id: str,
+        backend: Any,
+        repo_dir: str,
+        base: str,
+        branch: str,
+        issue_id: str | None,
+        issue_uuid: str | None,
+        verdict: Any,
+        violations: tuple[Any, ...],
+        failed_rule_ids: list[str],
+        evidence: str,
+        advice: list[str],
+    ) -> ToolMessage | None:
+        """Durable round counter + OPE-10 approval pause behind one fail-open seam.
+
+        Returns None only when a one-time approved exemption is consumed — the
+        caller then treats the gate as passed for this exact diff.
+        """
+        try:
+            shas = await _base_and_head_shas(backend, base, branch, repo_dir)
+            if shas is None:
+                raise RuntimeError("could not resolve base/head SHAs")
+            base_sha, head_sha = shas
+            fingerprint = gate_fingerprint(base_sha, head_sha, failed_rule_ids)
+            terminal = (await get_gate_approvals(thread_id)).get(fingerprint, {})
+            terminal_status = terminal.get("status")
+            approval_url = dashboard_gate_approval_url(thread_id, fingerprint)
+            diff_stats = {
                 "raw_loc": verdict.raw_loc,
-                "effective_loc": verdict.effective_loc,
+                "effective_loc": int(verdict.effective_loc),
                 "production_files": verdict.production_files,
                 "exceeded": list(verdict.exceeded),
-            },
-            "hygiene_violations": [{"rule": v.rule, "message": v.message} for v in violations],
-            "corrective_round": rounds,
-            "escalation_required": escalate,
-        }
-        return ToolMessage(
-            content=json.dumps(content), tool_call_id=_tool_call_id(request), status="error"
-        )
+            }
+            if terminal_status == GATE_APPROVAL_REJECTED:
+                return _block_message(
+                    request,
+                    advice=[
+                        "A human rejected this gate breach. Split the change into "
+                        "smaller PRs or fix the violations and open a new run; do "
+                        "not retry open_pull_request with this diff."
+                    ],
+                    verdict=verdict,
+                    violations=violations,
+                    rounds=int(terminal.get("rounds") or 0),
+                    escalate=True,
+                    fingerprint=fingerprint,
+                    approval_url=approval_url,
+                    approval_status=terminal_status,
+                )
+            record, created = await ensure_gate_approval_pending(
+                thread_id,
+                fingerprint=fingerprint,
+                issue_id=issue_uuid or issue_id,
+                issue_identifier=issue_id,
+                base_sha=base_sha,
+                head_sha=head_sha,
+                failed_rule_ids=failed_rule_ids,
+                diff_stats=diff_stats,
+                evidence_tail=evidence,
+                approval_url=approval_url,
+            )
+            status = await gate_approval_status(thread_id, fingerprint)
+            if status == GATE_APPROVAL_APPROVED and await consume_gate_approval(
+                thread_id, fingerprint
+            ):
+                logger.info(
+                    "PR standards gate: passing thread %s on a one-time approved "
+                    "exemption (fingerprint %s)",
+                    thread_id,
+                    fingerprint,
+                )
+                return None  # exemption consumed: gate passes this diff once
+            rounds = await bump_gate_rounds(thread_id, fingerprint)
+            escalate = rounds >= MAX_CORRECTIVE_ROUNDS
+            if escalate:
+                # The durable record exists before any notification attempt.
+                await _notify_gate_escalation(thread_id, fingerprint, record, created=created)
+                advice.append(
+                    f"This was corrective round {rounds} of {MAX_CORRECTIVE_ROUNDS}: "
+                    "the run is blocked pending human approval"
+                    + (f" at {approval_url}" if approval_url else "")
+                    + ". Do not retry open_pull_request until a human approves the "
+                    "gate breach — a Linear comment has been posted by the gate "
+                    "itself, no further surfacing is needed."
+                )
+            logger.info(
+                "PR standards gate: blocking open_pull_request (round %d) — atomicity=%s hygiene=%s",
+                rounds,
+                verdict.exceeded,
+                [v.rule for v in violations],
+            )
+            return _block_message(
+                request,
+                advice=advice,
+                verdict=verdict,
+                violations=violations,
+                rounds=rounds,
+                escalate=escalate,
+                fingerprint=fingerprint,
+                approval_url=approval_url if escalate else None,
+                approval_status=GATE_APPROVAL_PENDING if escalate else None,
+            )
+        except Exception:
+            # A fault in the durable-state layer must not wedge PR creation —
+            # log loudly and fall back to the advice-only corrective message.
+            logger.exception("PR standards gate: durable approval state error")
+            rounds = self._fallback_rounds.get(thread_id, 0) + 1
+            self._fallback_rounds[thread_id] = rounds
+            escalate = rounds >= MAX_CORRECTIVE_ROUNDS
+            fallback_advice = list(advice)
+            if escalate:
+                fallback_advice.append(
+                    "The durable gate-approval state store failed (see backend "
+                    "logs): surface this gate failure to a human for approval."
+                )
+            return _block_message(
+                request,
+                advice=fallback_advice,
+                verdict=verdict,
+                violations=violations,
+                rounds=rounds,
+                escalate=escalate,
+            )

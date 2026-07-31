@@ -1,8 +1,10 @@
 import type {
   AgentSchedule,
   AgentThread,
+  GateApprovalsResponse,
   ImageChunk,
   Message,
+  PendingGateApprovalsResponse,
   WorkflowPushApprovalsResponse,
 } from "./types"
 
@@ -263,6 +265,22 @@ export const agentsApi = {
       `/workflow-approval/${encodeURIComponent(threadId)}/${encodeURIComponent(fingerprint)}/reject`,
       { method: "POST" }
     ),
+  listGateApprovals: (threadId: string) =>
+    agentsRequest<GateApprovalsResponse>(
+      `/gate-approval/${encodeURIComponent(threadId)}`
+    ),
+  approveGateBreach: (threadId: string, fingerprint: string) =>
+    agentsRequest<{ status: string; fingerprint: string }>(
+      `/gate-approval/${encodeURIComponent(threadId)}/${encodeURIComponent(fingerprint)}/approve`,
+      { method: "POST" }
+    ),
+  rejectGateBreach: (threadId: string, fingerprint: string) =>
+    agentsRequest<{ status: string; fingerprint: string }>(
+      `/gate-approval/${encodeURIComponent(threadId)}/${encodeURIComponent(fingerprint)}/reject`,
+      { method: "POST" }
+    ),
+  listPendingGateApprovals: () =>
+    agentsRequest<PendingGateApprovalsResponse>(`/gate-approval/pending`),
   queueMessage: (threadId: string, body: ThreadMessageRequest) =>
     agentsRequest<AgentThread>(
       `/threads/${encodeURIComponent(threadId)}/messages`,

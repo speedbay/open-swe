@@ -26,6 +26,14 @@ def dashboard_plan_url(thread_id: str) -> str | None:
     return f"{base_url}/agents/{quote(thread_id, safe='')}/plan"
 
 
+def dashboard_gate_approval_url(thread_id: str, fingerprint: str) -> str | None:
+    """Build the dashboard gate-approval URL for a thread/fingerprint."""
+    thread_url = dashboard_thread_url(thread_id)
+    if not thread_url or not fingerprint:
+        return thread_url
+    return f"{thread_url}?gateApproval={quote(fingerprint, safe='')}"
+
+
 def dashboard_workflow_approval_url(thread_id: str, fingerprint: str) -> str | None:
     """Build the dashboard workflow approval URL for a thread/fingerprint."""
     thread_url = dashboard_thread_url(thread_id)
