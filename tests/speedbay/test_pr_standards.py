@@ -112,7 +112,14 @@ async def _fail_handler(request: Any) -> Any:  # pragma: no cover - must not run
 
 
 def _numstat(rows: str) -> FakeBackend:
-    return FakeBackend({"diff --numstat": FakeResponse(output=rows)})
+    # rev-parse resolves both refs to a pinned SHA first (the diff then runs
+    # against SHAs); any 40-char value works for these unit fakes.
+    return FakeBackend(
+        {
+            "rev-parse": FakeResponse(output="f" * 40),
+            "diff --numstat": FakeResponse(output=rows),
+        }
+    )
 
 
 def _payload(result: Any) -> dict[str, Any]:
@@ -166,7 +173,8 @@ def test_compliant_diff_and_hygiene_open_normally(monkeypatch) -> None:
     assert result == "pr-opened"
     diff = next(c for c in backend.commands if "diff --numstat" in c)
     assert diff.startswith("git -C /workspace/wh diff --numstat")
-    assert diff.endswith(f"origin/main...{BRANCH}")
+    # The diff runs against pinned SHAs (resolved first), never mutable refs.
+    assert diff.endswith(f"{'f' * 40}...{'f' * 40}")
 
 
 def test_gate_passing_pr_is_forced_ready_for_review(monkeypatch) -> None:
@@ -223,7 +231,10 @@ def test_hygiene_violations_blocked_with_rule_names(monkeypatch) -> None:
 
 def test_truncated_numstat_blocks_as_oversized(monkeypatch) -> None:
     backend = FakeBackend(
-        {"diff --numstat": FakeResponse(output="1\t0\tagent/api.py\n", truncated=True)}
+        {
+            "rev-parse": FakeResponse(output="f" * 40),
+            "diff --numstat": FakeResponse(output="1\t0\tagent/api.py\n", truncated=True),
+        }
     )
     _wire(monkeypatch, backend)
     _stub_durable_state(monkeypatch)

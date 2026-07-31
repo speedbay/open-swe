@@ -576,20 +576,22 @@ def test_fingerprint_binds_the_diffed_base_ref(monkeypatch, caplog) -> None:
     _wire_linear(monkeypatch, linear)
     backend = FakeBackend(
         {
-            # Insertion order matters: the origin needle is a superstring of
-            # the local one, so it must be matched first.
-            "diff --numstat origin/main": FakeResponse(output="", exit_code=128),
-            "diff --numstat main": FakeResponse(output="400\t0\tagent/api.py\n"),
+            # origin/main resolves (to x…) but shares no merge base with the
+            # head, so its SHA-pinned diff fails; the local base (b…) diffs
+            # fine. Insertion order matters for superstring needles.
             "rev-parse ope-10-gate-breach": FakeResponse(output="h" * 40),
             "rev-parse origin/main": FakeResponse(output="x" * 40),
             "rev-parse main": FakeResponse(output="b" * 40),
+            "diff --numstat " + "x" * 40: FakeResponse(output="", exit_code=128),
+            "diff --numstat " + "b" * 40: FakeResponse(output="400\t0\tagent/api.py\n"),
         }
     )
     _wire_gate(monkeypatch, backend)
     payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler)))
     assert payload["code"] == "pr_standards_failed"
-    rev_parses = [c for c in backend.commands if "rev-parse" in c]
-    assert not any("rev-parse origin/main" in c for c in rev_parses)
+    # Diffs ran against pinned SHAs, never mutable refs.
+    diffs = [c for c in backend.commands if "diff --numstat" in c]
+    assert all(("x" * 40 in c or "b" * 40 in c) for c in diffs)
     record = client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY]
     (fingerprint,) = record.keys()
     assert fingerprint == ga.gate_fingerprint("b" * 40, "h" * 40, ["atomicity"], DIGEST)

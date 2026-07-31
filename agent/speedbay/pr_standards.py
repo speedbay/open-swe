@@ -77,28 +77,36 @@ _FALLBACK_ERROR = (
 
 async def _numstat(
     backend: Any, base: str, head: str, repo_dir: str
-) -> tuple[str, bool, str] | None:
+) -> tuple[str, bool, str, str] | None:
     """``git diff --numstat`` of ``head`` vs the PR base, or None if undiffable.
 
     Runs inside ``repo_dir`` — the resolved repo clone under ``/workspace``
     (see quality_gates ``resolve_repo_dir``), never ``/workspace`` itself,
-    which is not a git repo (OPE-59). Mirrors quality_gates ``_changed_paths``:
-    tries ``origin/<base>`` (the push target) then ``<base>``; refs and the
-    directory are shell-quoted (model- and issue-controlled args).
-    Returns ``(output, truncated, base_ref)`` — truncated output is missing
-    rows, and ``base_ref`` is the ref the diff actually ran against so the
-    approval fingerprint binds the same base the verdict was computed from
-    (never a differently-resolved fallback).
+    which is not a git repo (OPE-59). Refs are resolved to immutable SHAs
+    **first** and the diff runs against those SHAs, so the evaluated diff and
+    the approval fingerprint cannot diverge — a ref moving between operations
+    is harmless because only pinned SHAs are ever diffed. Base resolution
+    tries ``origin/<base>`` (the push target) then ``<base>``, falling back
+    when the ref is missing or its SHA shares no merge base with ``head``.
+    Refs and the directory are shell-quoted (model- and issue-controlled).
+    Returns ``(output, truncated, base_sha, head_sha)`` — truncated output is
+    missing rows.
     """
+    head_sha = await _rev_parse(backend, repo_dir, head)
+    if not head_sha:
+        return None
     for ref in (f"origin/{base}", base):
+        base_sha = await _rev_parse(backend, repo_dir, ref)
+        if not base_sha:
+            continue
         response = await backend.aexecute(
             f"git -C {shlex.quote(repo_dir)} diff --numstat "
-            f"{shlex.quote(ref)}...{shlex.quote(head)}",
+            f"{shlex.quote(base_sha)}...{shlex.quote(head_sha)}",
             timeout=DIFF_TIMEOUT_SECONDS,
         )
         if getattr(response, "exit_code", None) == 0:
             output = getattr(response, "output", "") or ""
-            return output, bool(getattr(response, "truncated", False)), ref
+            return output, bool(getattr(response, "truncated", False)), base_sha, head_sha
     return None
 
 
@@ -116,22 +124,6 @@ async def _rev_parse(backend: Any, repo_dir: str, ref: str) -> str | None:
     output = (getattr(response, "output", "") or "").strip().splitlines()
     sha = output[0].strip() if output else ""
     return sha or None
-
-
-async def _base_and_head_shas(
-    backend: Any, base_ref: str, head: str, repo_dir: str
-) -> tuple[str, str] | None:
-    """The SHAs the fingerprint binds; None when unresolvable (fail open).
-
-    ``base_ref`` is the exact ref ``_numstat`` diffed against — resolved
-    directly, with no independent origin/local fallback, so the fingerprint
-    can never bind a different base than the evaluated diff.
-    """
-    head_sha = await _rev_parse(backend, repo_dir, head)
-    base_sha = await _rev_parse(backend, repo_dir, base_ref)
-    if not head_sha or not base_sha:
-        return None
-    return base_sha, head_sha
 
 
 def _force_ready_for_review(request: ToolCallRequest) -> ToolCallRequest:
@@ -394,7 +386,7 @@ class PRStandardsMiddleware(AgentMiddleware):
                     base,
                 )
                 return None
-            numstat, truncated, base_ref = diff
+            numstat, truncated, base_sha, head_sha = diff
             verdict = check_atomicity(parse_numstat(numstat))
             if truncated:  # missing rows would undercount — fail closed
                 verdict = attrs.evolve(
@@ -446,8 +438,8 @@ class PRStandardsMiddleware(AgentMiddleware):
             thread_id=str(thread_id),
             backend=backend,
             repo_dir=repo_dir,
-            base=base_ref,
-            branch=branch,
+            base_sha=base_sha,
+            head_sha=head_sha,
             issue_id=issue_id,
             issue_uuid=_issue_uuid(configurable),
             verdict=verdict,
@@ -465,8 +457,8 @@ class PRStandardsMiddleware(AgentMiddleware):
         thread_id: str,
         backend: Any,
         repo_dir: str,
-        base: str,
-        branch: str,
+        base_sha: str,
+        head_sha: str,
         issue_id: str | None,
         issue_uuid: str | None,
         verdict: Any,
@@ -482,10 +474,8 @@ class PRStandardsMiddleware(AgentMiddleware):
         caller then treats the gate as passed for this exact diff.
         """
         try:
-            shas = await _base_and_head_shas(backend, base, branch, repo_dir)
-            if shas is None:
-                raise RuntimeError("could not resolve base/head SHAs")
-            base_sha, head_sha = shas
+            # The SHAs arrive from _numstat, which resolved them before
+            # diffing — the fingerprint binds exactly the evaluated diff.
             fingerprint = gate_fingerprint(base_sha, head_sha, failed_rule_ids, metadata_digest)
             approval_url = dashboard_gate_approval_url(thread_id, fingerprint)
             diff_stats = {
