@@ -20,8 +20,11 @@ import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 from langgraph_sdk import get_client
+
+from ..utils.dashboard_links import dashboard_thread_url
 
 GATE_APPROVALS_KEY = "gate_approvals"
 GATE_APPROVAL_PENDING = "pending"
@@ -37,6 +40,19 @@ _TERMINAL_STATUSES = {GATE_APPROVAL_REJECTED}
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def dashboard_gate_approval_url(thread_id: str, fingerprint: str) -> str | None:
+    """Dashboard gate-approval URL for a thread/fingerprint.
+
+    Lives here (org layer) rather than in upstream ``utils/dashboard_links.py``
+    so the fork's merge contract holds; composes on the upstream
+    ``dashboard_thread_url`` without editing it.
+    """
+    thread_url = dashboard_thread_url(thread_id)
+    if not thread_url or not fingerprint:
+        return thread_url
+    return f"{thread_url}?gateApproval={quote(fingerprint, safe='')}"
 
 
 def gate_fingerprint(base_sha: str, head_sha: str, failed_rule_ids: list[str]) -> str:

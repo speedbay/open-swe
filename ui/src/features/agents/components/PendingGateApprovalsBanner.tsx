@@ -1,7 +1,7 @@
 import { ShieldAlert } from "lucide-react"
 import { Link } from "@tanstack/react-router"
 
-import { usePendingGateApprovals } from "@/features/agents/lib/queries"
+import { usePendingGateApprovals } from "@/features/agents/lib/gateApproval"
 
 export function PendingGateApprovalsBanner() {
   const query = usePendingGateApprovals()

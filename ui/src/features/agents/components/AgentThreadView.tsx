@@ -15,6 +15,7 @@ import {
 } from "@/features/agents/components/AgentGitPanel"
 import { AgentPromptBar } from "@/features/agents/components/AgentPromptBar"
 import { WorkflowApprovalCard } from "@/features/agents/components/WorkflowApprovalCard"
+// SPEEDBAY REGISTRATION (OPE-10, see FORK.md): gate-breach approval card.
 import { GateApprovalCard } from "@/features/agents/components/GateApprovalCard"
 import {
   readStoredPanelCollapsed,
@@ -171,6 +172,7 @@ export function AgentThreadView({ thread }: AgentThreadViewProps) {
           threadId={thread.id}
           pollWhileActive={isStreaming}
         />
+        {/* SPEEDBAY REGISTRATION (OPE-10) */}
         <GateApprovalCard threadId={thread.id} pollWhileActive={isStreaming} />
         {thread.planStatus &&
           thread.planStatus !== "approved" &&

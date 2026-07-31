@@ -34,6 +34,10 @@ all survived, and re-add any a merge dropped (each is marked in-code with a
 | 5 | `speedbay_verify_trigger.maybe_handle(...)` verify-transition hook (OPE-39) | inside `linear_webhook()` in `agent/webhooks/linear_routes.py`, immediately after JSON parsing and before the Comment-type filter, plus its import above; logic lives in `agent/speedbay/verify_trigger.py` |
 | 6 | `task == "verify_sweep"` scheduler branch (OPE-42) | inside `_launch()` in `agent/scheduler.py`, after the `reconcile` branch; logic lives in `agent/speedbay/verify_sweep.py`. The hourly cron is ensured idempotently at boot (registration #3); `speedbay/ensure_verify_sweep_cron.py` is list/inspect only |
 | 7 | `speedbay_linear_guard.is_duplicate_comment(...)` duplicate-delivery dedup (OPE-56) | inside `linear_webhook()` in `agent/webhooks/linear_routes.py`, immediately before background-task dispatch after validation and repo resolution; logic lives in `agent/speedbay/linear_guard.py` |
+| 8 | `gate_approval_router` import + `include_router` (OPE-10) | `create_app()` in `agent/api/app.py`; logic lives in `agent/speedbay/gate_approval.py` + `agent/speedbay/gate_approval_api.py` |
+| 9 | `export` on `agentsRequest` (OPE-10) | `ui/src/features/agents/lib/api.ts` — one-word visibility change so the fork-added `ui/src/features/agents/lib/gateApproval.ts` reuses the upstream request client |
+| 10 | `GateApprovalCard` render site (OPE-10) | import + one JSX element in `AgentThreadView.tsx`; component and hooks are fork-added files |
+| 11 | `PendingGateApprovalsBanner` render site (OPE-10) | import + one JSX element in `AgentsHome.tsx`; component and hooks are fork-added files |
 
 Identified by symbol, not `file:line` — the middleware list moved from :946 to :953 on the very first upstream merge.
 

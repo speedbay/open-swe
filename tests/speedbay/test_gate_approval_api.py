@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from agent.dashboard import gate_approval_api
+from agent.speedbay import gate_approval_api
 
 FP = "fp-1"
 OWNER_SESSION = {"sub": "owner", "email": "owner@example.com"}

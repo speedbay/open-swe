@@ -1,7 +1,8 @@
 """REST API for gate-breach (PR-standards escalation) approvals (OPE-10).
 
-SPEEDBAY org-layer file — upstream does not own it. Mirrors
-``workflow_approval_api.py``: owner-gated approve/reject per thread,
+SPEEDBAY org-layer file — upstream does not own it, and it lives under
+``agent/speedbay/`` so the fork's merge contract holds: upstream dashboard
+modules are imported, never edited. Mirrors ``workflow_approval_api.py``: owner-gated approve/reject per thread,
 approve dispatches a follow-up run on the same thread via
 ``_dispatch_followup`` (the machine resume), reject posts an explanatory
 Linear comment and leaves the run ended. Adds one thing the precedent
@@ -17,17 +18,17 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..speedbay.gate_approval import (
+from ..dashboard.oauth import require_same_origin_for_mutations, require_session
+from ..dashboard.plan_api import _dispatch_followup, _thread_metadata
+from ..dashboard.thread_api import _thread_is_readable, _user_owns_thread
+from ..utils.linear import comment_on_linear_issue
+from .gate_approval import (
     decide_gate_approval,
     gate_approval_response,
     gate_approval_responses,
     get_gate_approvals,
     list_pending_gate_approvals,
 )
-from ..utils.linear import comment_on_linear_issue
-from .oauth import require_same_origin_for_mutations, require_session
-from .plan_api import _dispatch_followup, _thread_metadata
-from .thread_api import _thread_is_readable, _user_owns_thread
 
 logger = logging.getLogger(__name__)
 

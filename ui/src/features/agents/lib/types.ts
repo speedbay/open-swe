@@ -214,44 +214,6 @@ export interface WorkflowPushApprovalsResponse {
   approvals: Array<WorkflowPushApproval>
 }
 
-export interface GateDiffStats {
-  rawLoc: number
-  effectiveLoc: number
-  productionFiles: number
-  exceeded: Array<string>
-}
-
-export interface GateApproval {
-  fingerprint: string
-  status: WorkflowApprovalStatus
-  issueId: string | null
-  baseSha: string
-  headSha: string
-  failedRuleIds: Array<string>
-  diffStats: GateDiffStats
-  evidenceTail: string
-  approvalUrl: string | null
-  notified: boolean
-  rounds: number
-  requestedAt: string | null
-  decidedAt: string | null
-  decidedBy: string | null
-}
-
-export interface GateApprovalsResponse {
-  threadId: string
-  isOwner: boolean
-  approvals: Array<GateApproval>
-}
-
-export interface PendingGateApproval extends GateApproval {
-  threadId: string
-}
-
-export interface PendingGateApprovalsResponse {
-  approvals: Array<PendingGateApproval>
-}
-
 export interface AgentThread {
   id: string
   title: string

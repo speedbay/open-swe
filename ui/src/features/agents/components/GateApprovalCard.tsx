@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react"
 import { ShieldAlert } from "lucide-react"
 
-import type { GateApproval } from "@/features/agents/lib/types"
 import {
+  type GateApproval,
   useGateApprovalDecision,
   useGateApprovals,
-} from "@/features/agents/lib/queries"
+} from "@/features/agents/lib/gateApproval"
 import { Button } from "@/components/ui/button"
 
 function shortSha(value: string): string {

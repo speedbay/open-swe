@@ -41,7 +41,6 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from ..middleware.pr_creation_guard import is_pr_creation_fallback_command
-from ..utils.dashboard_links import dashboard_gate_approval_url
 from ..utils.linear import comment_on_linear_issue
 from ..utils.sandbox_state import get_sandbox_backend
 
@@ -54,6 +53,7 @@ from .gate_approval import (
     GATE_APPROVAL_REJECTED,
     bump_gate_rounds,
     consume_gate_approval,
+    dashboard_gate_approval_url,
     ensure_gate_approval_pending,
     gate_approval_status,
     gate_fingerprint,

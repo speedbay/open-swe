@@ -22,9 +22,6 @@ export const agentThreadKeys = {
   prDiff: (threadId: string) => ["agent-threads", threadId, "pr-diff"] as const,
   workflowApprovals: (threadId: string) =>
     ["agent-threads", threadId, "workflow-approvals"] as const,
-  gateApprovals: (threadId: string) =>
-    ["agent-threads", threadId, "gate-approvals"] as const,
-  pendingGateApprovals: ["agent-threads", "pending-gate-approvals"] as const,
   page: (params: ThreadsPageParams) =>
     ["agent-threads", "lists", "page", params] as const,
 }
@@ -158,59 +155,6 @@ export function useWorkflowApprovals(
       )
         ? 3000
         : false,
-    retry: false,
-  })
-}
-
-export function useGateApprovals(
-  threadId: string,
-  options: { pollWhileActive?: boolean } = {}
-) {
-  return useQuery({
-    queryKey: agentThreadKeys.gateApprovals(threadId),
-    queryFn: () => agentsApi.listGateApprovals(threadId),
-    enabled: Boolean(threadId),
-    refetchInterval: (query) =>
-      options.pollWhileActive ||
-      query.state.data?.approvals.some(
-        (approval) => approval.status === "pending"
-      )
-        ? 3000
-        : false,
-    retry: false,
-  })
-}
-
-export function useGateApprovalDecision(threadId: string) {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (vars: {
-      fingerprint: string
-      decision: "approve" | "reject"
-    }) =>
-      vars.decision === "approve"
-        ? agentsApi.approveGateBreach(threadId, vars.fingerprint)
-        : agentsApi.rejectGateBreach(threadId, vars.fingerprint),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: agentThreadKeys.gateApprovals(threadId),
-      })
-      void queryClient.invalidateQueries({
-        queryKey: agentThreadKeys.pendingGateApprovals,
-      })
-      void queryClient.invalidateQueries({
-        queryKey: agentThreadKeys.detail(threadId),
-      })
-      invalidateAgentThreadLists(queryClient)
-    },
-  })
-}
-
-export function usePendingGateApprovals() {
-  return useQuery({
-    queryKey: agentThreadKeys.pendingGateApprovals,
-    queryFn: () => agentsApi.listPendingGateApprovals(),
-    refetchInterval: 10000,
     retry: false,
   })
 }
