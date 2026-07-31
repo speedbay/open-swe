@@ -57,7 +57,6 @@ from .gate_approval import (
     ensure_gate_approval_pending,
     gate_approval_status,
     gate_fingerprint,
-    get_gate_approvals,
     mark_gate_approval_notified,
     pr_metadata_digest,
 )
@@ -488,8 +487,6 @@ class PRStandardsMiddleware(AgentMiddleware):
                 raise RuntimeError("could not resolve base/head SHAs")
             base_sha, head_sha = shas
             fingerprint = gate_fingerprint(base_sha, head_sha, failed_rule_ids, metadata_digest)
-            terminal = (await get_gate_approvals(thread_id)).get(fingerprint, {})
-            terminal_status = terminal.get("status")
             approval_url = dashboard_gate_approval_url(thread_id, fingerprint)
             diff_stats = {
                 "raw_loc": verdict.raw_loc,
@@ -497,22 +494,6 @@ class PRStandardsMiddleware(AgentMiddleware):
                 "production_files": verdict.production_files,
                 "exceeded": list(verdict.exceeded),
             }
-            if terminal_status == GATE_APPROVAL_REJECTED:
-                return _block_message(
-                    request,
-                    advice=[
-                        "A human rejected this gate breach. Split the change into "
-                        "smaller PRs or fix the violations and open a new run; do "
-                        "not retry open_pull_request with this diff."
-                    ],
-                    verdict=verdict,
-                    violations=violations,
-                    rounds=int(terminal.get("rounds") or 0),
-                    escalate=True,
-                    fingerprint=fingerprint,
-                    approval_url=approval_url,
-                    approval_status=terminal_status,
-                )
             record, created = await ensure_gate_approval_pending(
                 thread_id,
                 fingerprint=fingerprint,
@@ -525,7 +506,29 @@ class PRStandardsMiddleware(AgentMiddleware):
                 evidence_tail=evidence,
                 approval_url=approval_url,
             )
+            # This status read is the freshest view after the lock-serialized
+            # ensure call: a rejection landing in any earlier window (there is
+            # deliberately no pre-ensure terminal read to race against) is
+            # caught here instead of pausing the run on an approval that can
+            # never arrive. ensure() returns terminal records unchanged, so a
+            # rejected fingerprint was never rewritten to pending.
             status = await gate_approval_status(thread_id, fingerprint)
+            if status == GATE_APPROVAL_REJECTED:
+                return _block_message(
+                    request,
+                    advice=[
+                        "A human rejected this gate breach. Split the change into "
+                        "smaller PRs or fix the violations and open a new run; do "
+                        "not retry open_pull_request with this diff."
+                    ],
+                    verdict=verdict,
+                    violations=violations,
+                    rounds=int(record.get("rounds") or 0),
+                    escalate=True,
+                    fingerprint=fingerprint,
+                    approval_url=approval_url,
+                    approval_status=GATE_APPROVAL_REJECTED,
+                )
             if status == GATE_APPROVAL_APPROVED and await consume_gate_approval(
                 thread_id, fingerprint
             ):

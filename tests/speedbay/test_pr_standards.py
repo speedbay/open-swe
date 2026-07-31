@@ -258,7 +258,6 @@ def _stub_durable_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(fg, "ensure_gate_approval_pending", fail)
     monkeypatch.setattr(fg, "consume_gate_approval", fail)
     monkeypatch.setattr(fg, "gate_approval_status", fail)
-    monkeypatch.setattr(fg, "get_gate_approvals", fail)
 
 
 def test_corrective_rounds_bounded_then_escalates(monkeypatch, caplog) -> None:

@@ -670,3 +670,29 @@ def test_approval_is_content_bound_not_just_diff_bound(monkeypatch) -> None:
     assert record["status"] == ga.GATE_APPROVAL_APPROVED  # untouched
     # The reviewed content itself still passes on its one-time exemption.
     assert _run(middleware.awrap_tool_call(_request(), _pass_handler)) == "pr-opened"
+
+
+def test_rejection_racing_the_pending_write_still_blocks_terminally(monkeypatch) -> None:
+    """A rejection landing during the ensure/status window must produce the
+    terminal-rejection block, never a pending pause that cannot resolve."""
+    client, linear = FakeLangGraphClient(), FakeLinear()
+    _wire_store(monkeypatch, client)
+    _wire_linear(monkeypatch, linear)
+    _wire_gate(monkeypatch, _gate_backend())
+
+    real_ensure = ga.ensure_gate_approval_pending
+
+    async def racing_ensure(thread_id: str, **kwargs: Any):
+        record, created = await real_ensure(thread_id, **kwargs)
+        # The human's rejection lands immediately after the pending write.
+        await ga.decide_gate_approval(
+            thread_id, kwargs["fingerprint"], approved=False, actor="owner"
+        )
+        return record, created
+
+    monkeypatch.setattr(fg, "ensure_gate_approval_pending", racing_ensure)
+    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler)))
+    assert payload["gate_approval"]["status"] == ga.GATE_APPROVAL_REJECTED
+    assert payload["recoverable_by_agent"] is False
+    assert "rejected" in payload["error"]
+    assert "blocked pending human approval" not in payload["error"]
