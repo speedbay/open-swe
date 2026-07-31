@@ -293,6 +293,16 @@ def test_dispatch_builds_verify_prompt_on_distinct_thread():
     assert "Never defer. Evidence missing now means `incomplete` now." in prompt
     assert "never call `schedule_thread_wakeup`" in prompt
     assert "gh pr diff" in prompt
+    # OPE-52: the verifier writes checkbox results back to the issue body —
+    # satisfied criteria `[ ]` → `[x]`, body otherwise byte-identical, and the
+    # verdict is posted even if the description edit fails.
+    assert "satisfied criterion's `[ ]`\nto `[x]`" in prompt
+    assert "byte-identical" in prompt
+    assert "still post the verdict" in prompt
+    # OPE-52: ops-shaped criteria stay `incomplete` and the comment names the
+    # drafting-defect extraction guidance instead of a generic "missing".
+    assert "ops-shaped criterion — convert to code or extract" in prompt
+    assert "to a linked HITL ops issue per the planning contract." in prompt
     assert "`done` = `state-done`" in prompt
     assert "`incomplete` = `state-inc`" in prompt
     assert "Please analyze this issue and implement" not in prompt
