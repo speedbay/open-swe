@@ -212,11 +212,23 @@ async def bump_gate_rounds(thread_id: str, fingerprint: str) -> int:
         return int(record["rounds"])
 
 
-async def mark_gate_approval_notified(thread_id: str, fingerprint: str) -> None:
+async def mark_gate_approval_notified(
+    thread_id: str, fingerprint: str, *, requested_at: str | None = None
+) -> None:
+    """Flag the record as notified — but only for the cycle that was posted.
+
+    ``requested_at`` identifies the approval cycle the caller actually
+    notified: if the record was refreshed to a new cycle while the Linear
+    post was in flight (consumed → pending resets ``requested_at``), the
+    stale mark is dropped so the new cycle's own notification is not
+    suppressed. ``None`` skips the guard (caller has no cycle identity).
+    """
     async with _thread_locks[thread_id]:
         approvals = await get_gate_approvals(thread_id)
         record = approvals.get(fingerprint)
         if not record:
+            return
+        if requested_at is not None and record.get("requested_at") != requested_at:
             return
         record["notified"] = True
         record["notified_at"] = _now()

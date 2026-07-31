@@ -587,3 +587,53 @@ def test_fingerprint_binds_the_diffed_base_ref(monkeypatch, caplog) -> None:
     record = client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY]
     (fingerprint,) = record.keys()
     assert fingerprint == ga.gate_fingerprint("b" * 40, "h" * 40, ["atomicity"])
+
+
+def test_stale_notify_mark_does_not_suppress_new_cycle(monkeypatch) -> None:
+    """A notify mark from a superseded cycle is dropped: the refreshed record
+    keeps notified=False so its own escalation still posts."""
+    client = FakeLangGraphClient()
+    _wire_store(monkeypatch, client)
+    kwargs: dict[str, Any] = {
+        "fingerprint": FP,
+        "issue_id": "uuid-1",
+        "base_sha": "b" * 40,
+        "head_sha": "h" * 40,
+        "failed_rule_ids": ["atomicity"],
+    }
+    record, _ = _run(ga.ensure_gate_approval_pending("t-1", **kwargs))
+    stale_cycle = record["requested_at"]
+    # The cycle advances while a Linear post is in flight: approve → consume →
+    # refresh back to pending (new requested_at).
+    _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner"))
+    assert _run(ga.consume_gate_approval("t-1", FP)) is True
+    refreshed, _ = _run(ga.ensure_gate_approval_pending("t-1", **kwargs))
+    # The in-flight post now lands with the stale cycle id: refused whenever
+    # the refreshed cycle has a different requested_at; the guard compares
+    # cycle identity, not wall-clock ordering.
+    _run(ga.mark_gate_approval_notified("t-1", FP, requested_at=stale_cycle + "-stale"))
+    current = client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY][FP]
+    assert current["notified"] is False
+    # The current cycle's own mark still works.
+    _run(ga.mark_gate_approval_notified("t-1", FP, requested_at=refreshed["requested_at"]))
+    current = client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY][FP]
+    assert current["notified"] is True
+
+
+def test_escalation_advice_reflects_failed_linear_post(monkeypatch) -> None:
+    """When the gate cannot post its Linear comment, the block message must not
+    claim it did — the agent is told to surface via the source channel."""
+    client, linear = FakeLangGraphClient(), FakeLinear(fail=True)
+    _wire_store(monkeypatch, client)
+    _wire_linear(monkeypatch, linear)
+    _wire_gate(monkeypatch, _gate_backend())
+
+    middleware = PRStandardsMiddleware()
+    for _ in range(2):
+        _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+    payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+
+    assert payload["escalation_required"] is True
+    assert "no further surfacing is needed" not in payload["error"]
+    assert "could NOT post its Linear comment" in payload["error"]
+    assert "surface this gate failure to a human" in payload["error"]

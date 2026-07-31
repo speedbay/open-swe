@@ -257,12 +257,17 @@ async def _notify_gate_escalation(
     record: dict[str, Any],
     *,
     created: bool = False,
-) -> None:
-    """Post-once Linear surfacing; never blocks the durable record."""
+) -> bool:
+    """Post-once Linear surfacing; never blocks the durable record.
+
+    Returns True when this breach cycle has a posted Linear comment (now or
+    previously); False when no comment exists — the caller must not tell the
+    agent that surfacing already happened.
+    """
     # A freshly created record is always notified even if a stale store fault
     # left it with a stray `notified` flag (post-once for a given record).
     if record.get("notified") is True and not created:
-        return
+        return True
     issue_id = record.get("issue_id")
     if not isinstance(issue_id, str) or not issue_id:
         logger.error(
@@ -271,7 +276,7 @@ async def _notify_gate_escalation(
             thread_id,
             fingerprint,
         )
-        return
+        return False
     try:
         ok = await comment_on_linear_issue(
             issue_id, _gate_escalation_linear_comment(record, thread_id=thread_id)
@@ -287,8 +292,16 @@ async def _notify_gate_escalation(
             thread_id,
             record.get("approval_url"),
         )
-        return
-    await mark_gate_approval_notified(thread_id, fingerprint)
+        return False
+    # Bind the mark to this cycle: if the record was refreshed while the post
+    # was in flight, the new cycle keeps its own un-notified state.
+    requested_at = record.get("requested_at")
+    await mark_gate_approval_notified(
+        thread_id,
+        fingerprint,
+        requested_at=requested_at if isinstance(requested_at, str) else None,
+    )
+    return True
 
 
 class PRStandardsMiddleware(AgentMiddleware):
@@ -524,14 +537,24 @@ class PRStandardsMiddleware(AgentMiddleware):
             escalate = rounds >= MAX_CORRECTIVE_ROUNDS
             if escalate:
                 # The durable record exists before any notification attempt.
-                await _notify_gate_escalation(thread_id, fingerprint, record, created=created)
+                posted = await _notify_gate_escalation(
+                    thread_id, fingerprint, record, created=created
+                )
+                surfacing = (
+                    "a Linear comment has been posted by the gate itself, no "
+                    "further surfacing is needed."
+                    if posted
+                    else "the gate could NOT post its Linear comment (see backend "
+                    "logs); the breach is visible in the dashboard pending-approvals "
+                    "list — surface this gate failure to a human via the source "
+                    "channel."
+                )
                 advice.append(
                     f"This was corrective round {rounds} of {MAX_CORRECTIVE_ROUNDS}: "
                     "the run is blocked pending human approval"
                     + (f" at {approval_url}" if approval_url else "")
-                    + ". Do not retry open_pull_request until a human approves the "
-                    "gate breach — a Linear comment has been posted by the gate "
-                    "itself, no further surfacing is needed."
+                    + f". Do not retry open_pull_request until a human approves the "
+                    f"gate breach — {surfacing}"
                 )
             logger.info(
                 "PR standards gate: blocking open_pull_request (round %d) — atomicity=%s hygiene=%s",
