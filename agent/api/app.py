@@ -10,6 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..dashboard import router as dashboard_router
 from ..dashboard.plan_api import plan_router
 from ..dashboard.workflow_approval_api import workflow_approval_router
+
+# SPEEDBAY REGISTRATION (see FORK.md): mounts the org-layer gate-breach
+# approval API (agent/speedbay/gate_approval_api.py, OPE-10).
+from ..speedbay.gate_approval_api import gate_approval_router
 from ..webhooks.github_routes import router as github_webhook_router
 from ..webhooks.linear_routes import router as linear_webhook_router
 from ..webhooks.slack_routes import router as slack_webhook_router
@@ -49,6 +53,7 @@ def create_app() -> FastAPI:
             allow_headers=["*"],
         )
     app.include_router(dashboard_router)
+    app.include_router(gate_approval_router)  # SPEEDBAY REGISTRATION (OPE-10)
     app.include_router(plan_router)
     app.include_router(workflow_approval_router)
     app.include_router(linear_webhook_router)

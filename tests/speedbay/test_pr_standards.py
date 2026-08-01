@@ -112,7 +112,14 @@ async def _fail_handler(request: Any) -> Any:  # pragma: no cover - must not run
 
 
 def _numstat(rows: str) -> FakeBackend:
-    return FakeBackend({"diff --numstat": FakeResponse(output=rows)})
+    # rev-parse resolves both refs to a pinned SHA first (the diff then runs
+    # against SHAs); any 40-char value works for these unit fakes.
+    return FakeBackend(
+        {
+            "rev-parse": FakeResponse(output="f" * 40),
+            "diff --numstat": FakeResponse(output=rows),
+        }
+    )
 
 
 def _payload(result: Any) -> dict[str, Any]:
@@ -166,7 +173,8 @@ def test_compliant_diff_and_hygiene_open_normally(monkeypatch) -> None:
     assert result == "pr-opened"
     diff = next(c for c in backend.commands if "diff --numstat" in c)
     assert diff.startswith("git -C /workspace/wh diff --numstat")
-    assert diff.endswith(f"origin/main...{BRANCH}")
+    # The diff runs against pinned SHAs (resolved first), never mutable refs.
+    assert diff.endswith(f"{'f' * 40}...{'f' * 40}")
 
 
 def test_gate_passing_pr_is_forced_ready_for_review(monkeypatch) -> None:
@@ -202,6 +210,7 @@ def test_blocked_pr_args_left_untouched(monkeypatch) -> None:
 
 def test_oversized_diff_blocked_with_cap_and_split_instruction(monkeypatch) -> None:
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
+    _stub_durable_state(monkeypatch)
     payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler)))
     assert payload["code"] == "pr_standards_failed"
     assert payload["recoverable_by_agent"] is True
@@ -212,6 +221,7 @@ def test_oversized_diff_blocked_with_cap_and_split_instruction(monkeypatch) -> N
 
 def test_hygiene_violations_blocked_with_rule_names(monkeypatch) -> None:
     _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"))
+    _stub_durable_state(monkeypatch)
     request = _request(title="update stuff", body=_body() + "\nMade by [Open SWE]\n")
     payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
     rules = {v["rule"] for v in payload["hygiene_violations"]}
@@ -221,15 +231,20 @@ def test_hygiene_violations_blocked_with_rule_names(monkeypatch) -> None:
 
 def test_truncated_numstat_blocks_as_oversized(monkeypatch) -> None:
     backend = FakeBackend(
-        {"diff --numstat": FakeResponse(output="1\t0\tagent/api.py\n", truncated=True)}
+        {
+            "rev-parse": FakeResponse(output="f" * 40),
+            "diff --numstat": FakeResponse(output="1\t0\tagent/api.py\n", truncated=True),
+        }
     )
     _wire(monkeypatch, backend)
+    _stub_durable_state(monkeypatch)
     payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler)))
     assert any("truncated" in reason for reason in payload["atomicity"]["exceeded"])
 
 
 def test_no_linear_issue_runs_attribution_check_only(monkeypatch) -> None:
     _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"), issue=None)
+    _stub_durable_state(monkeypatch)
     # Bad title passes without an expected issue id...
     request = _request(title="update stuff")
     assert _run(PRStandardsMiddleware().awrap_tool_call(request, _pass_handler)) == "pr-opened"
@@ -239,26 +254,55 @@ def test_no_linear_issue_runs_attribution_check_only(monkeypatch) -> None:
     assert [v["rule"] for v in payload["hygiene_violations"]] == ["ai-attribution"]
 
 
-def test_corrective_rounds_bounded_then_escalates(monkeypatch) -> None:
+def _stub_durable_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No durable store in these tests: the gate falls back to advice-only.
+
+    The fallback keeps the counter in-process for the active run and logs at
+    error level — OPE-10 semantics without a LangGraph thread. Escalation
+    still fires (rounds == MAX), only the approval pause is degraded.
+    """
+
+    async def fail(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("no durable store")
+
+    monkeypatch.setattr(fg, "bump_gate_rounds", fail)
+    monkeypatch.setattr(fg, "ensure_gate_approval_pending", fail)
+    monkeypatch.setattr(fg, "consume_gate_approval", fail)
+    monkeypatch.setattr(fg, "gate_approval_status", fail)
+
+
+def test_corrective_rounds_bounded_then_escalates(monkeypatch, caplog) -> None:
+    """Store outage: rounds still count, but the run is never wedged.
+
+    Without a durable pending record there is no fingerprint a human could
+    approve, so the fallback path must stay agent-recoverable (fail-open for
+    infrastructure faults) while still telling the agent to surface it.
+    """
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
+    _stub_durable_state(monkeypatch)
     middleware = PRStandardsMiddleware()
     for expected_round in (1, 2):
         payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
         assert payload["corrective_round"] == expected_round
         assert payload["escalation_required"] is False
-    payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+    with caplog.at_level("ERROR"):
+        payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
     assert payload["corrective_round"] == 3
-    assert payload["escalation_required"] is True
-    assert payload["recoverable_by_agent"] is False
-    assert "surface the gate failure to a human" in payload["error"]
+    assert payload["escalation_required"] is False
+    assert payload["recoverable_by_agent"] is True
+    assert "surface this gate failure to a human" in payload["error"]
+    assert "durable approval state error" in caplog.text
 
 
 def test_passing_gate_resets_the_round_counter(monkeypatch) -> None:
     middleware = PRStandardsMiddleware()
+    _stub_durable_state(monkeypatch)
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
     _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+    assert middleware._fallback_rounds.get("t-1") == 1
     _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"))
     assert _run(middleware.awrap_tool_call(_request(), _pass_handler)) == "pr-opened"
+    assert "t-1" not in middleware._fallback_rounds  # the pass cleared it
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
     payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
     assert payload["corrective_round"] == 1

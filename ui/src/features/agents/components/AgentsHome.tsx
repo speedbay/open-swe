@@ -8,6 +8,8 @@ import type { CreateAgentThreadVariables } from "@/features/agents/lib/queries"
 import type { ModelSelection } from "@/features/agents/lib/provider/useModelOptions"
 import { AgentPromptBar } from "@/features/agents/components/AgentPromptBar"
 import { OnboardingDialog } from "@/features/agents/components/OnboardingDialog"
+// SPEEDBAY REGISTRATION (OPE-10, see FORK.md): cross-thread pending gate approvals.
+import { PendingGateApprovalsBanner } from "@/features/agents/components/PendingGateApprovalsBanner"
 import { Logo } from "@/features/agents/components/chat/Logo"
 import {
   agentThreadKeys,
@@ -120,6 +122,8 @@ export function AgentsHome() {
       <OnboardingDialog />
       <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center">
         <div className="flex w-full flex-col items-center gap-6">
+          {/* SPEEDBAY REGISTRATION (OPE-10) */}
+          <PendingGateApprovalsBanner />
           <Logo />
           <AgentPromptBar
             onSubmit={handleSubmit}
