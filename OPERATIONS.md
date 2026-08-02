@@ -221,6 +221,28 @@ speedbay/set_model.py fireworks:accounts/fireworks/models/kimi-k3
 
 Settings live in the Store, so they survive restarts but not a Store wipe.
 
+### Subscription OAuth (OPE-60)
+
+Opt-in replacement for metered API-key billing on model calls: with
+`SPEEDBAY_SUBSCRIPTION_AUTH=1` in `.env`, `make_model` builds OpenAI models
+authenticated by the team's ChatGPT subscription OAuth tokens
+(`_ChatOpenAICodex`, ChatGPT codex backend). Fail-open: unset toggle, missing
+credentials, or a provider without a subscription branch all fall back to the
+unchanged API-key path with one warning in `/tmp/openswe-backend.log`.
+
+One-time login per machine (headless device-code flow; token store
+`~/.langchain/chatgpt-auth.json`, refresh + rotation handled automatically):
+
+```bash
+.venv/bin/python -c 'from langchain_openai.chatgpt_oauth import login_chatgpt_device; login_chatgpt_device()'
+```
+
+Do **not** copy the token store between machines — refresh tokens rotate on
+use, so two hosts sharing a copied store invalidate each other. Log in once
+per host instead. This is an unofficial subscription-token path (the class
+warns "experimental and unofficial" at construction); the toggle keeps
+API-key billing the default. Restart the backend after changing the toggle.
+
 ## Linear trigger
 
 A `@openswe` comment on a Linear ticket triggers a run. Setup facts that cost a
