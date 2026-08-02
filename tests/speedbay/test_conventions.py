@@ -97,6 +97,47 @@ class TestAugment:
         assert _MARKER in SPEEDBAY_CONVENTIONS
 
 
+class TestSimplicityLadder:
+    _HEADING = "## Implementation quality — the simplicity ladder"
+    _RUNGS = (
+        "Does this need to exist at all?",
+        "Reuse a helper, utility, or pattern already in this codebase.",
+        "Use the standard library",
+        "Use a native platform or database feature",
+        "Use an already-installed dependency",
+        "Make it one line",
+        "Only then write the minimum code that works.",
+    )
+
+    def test_augmented_prompt_contains_heading_and_ordered_rungs(self) -> None:
+        seen: list[ModelRequest[None]] = []
+
+        def handler(request: ModelRequest[None]) -> ModelResponse[Any]:
+            seen.append(request)
+            return cast("ModelResponse[Any]", {"messages": []})
+
+        SpeedbayConventionsMiddleware().wrap_model_call(_make_request(None), cast(Any, handler))
+
+        assert len(seen) == 1
+        assert seen[0].system_message is not None
+        text = seen[0].system_message.text
+        assert self._HEADING in text
+        positions = [text.index(rung) for rung in self._RUNGS]
+        assert positions == sorted(positions)
+
+    def test_contains_root_cause_rule(self) -> None:
+        assert "Fix root causes, not symptoms." in SPEEDBAY_CONVENTIONS
+        assert "find every caller" in SPEEDBAY_CONVENTIONS
+        assert "sibling callers broken" in SPEEDBAY_CONVENTIONS
+
+    def test_contains_ceiling_marker_and_carve_outs(self) -> None:
+        assert "`# ponytail:`" in SPEEDBAY_CONVENTIONS
+        assert "input validation at trust boundaries" in SPEEDBAY_CONVENTIONS
+        assert "error handling that prevents data loss" in SPEEDBAY_CONVENTIONS
+        assert "security measures" in SPEEDBAY_CONVENTIONS
+        assert "Explicit ACs always win" in SPEEDBAY_CONVENTIONS
+
+
 class TestWrapModelCall:
     def test_sync_handler_receives_augmented_request(self) -> None:
         middleware = SpeedbayConventionsMiddleware()

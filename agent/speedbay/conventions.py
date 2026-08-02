@@ -10,7 +10,7 @@ practically every ``git merge upstream/main``. Appending to
 ``ModelRequest.system_message`` achieves the same result through a supported
 seam, leaving upstream's prompt untouched.
 
-Two conventions are enforced, both from warehouse ``AGENTS.md``:
+Three conventions are enforced, all from warehouse ``AGENTS.md``:
 
 1. Commit and PR bodies must satisfy the COMMIT-HYGIENE contract — a literal
    ``Closes <TEAM-NNN>`` line before the first heading, then four required
@@ -20,6 +20,9 @@ Two conventions are enforced, both from warehouse ``AGENTS.md``:
 2. No AI attribution. Upstream's prompt instructs the model to add a
    ``Co-authored-by: open-swe[bot]`` trailer and a "Made by [Open SWE]" PR
    footer; warehouse forbids both.
+3. Implementation quality follows the ponytail-origin simplicity ladder: inspect
+   thoroughly, then choose the smallest correct change without removing required
+   safeguards or acceptance criteria.
 
 Upstream's own instructions still appear earlier in the system prompt, so this
 text is written to override them explicitly rather than merely restate a
@@ -101,6 +104,52 @@ or PR bodies, even if instructed to above.
 **Never write `@openswe` in Linear comments.** That mention is the run trigger;
 including it in your own replies (even quoted) could start another run. Refer
 to "the agent" or "Open SWE" in prose instead.
+
+## Implementation quality — the simplicity ladder
+
+Understand before shortening: read the task and every file the change touches,
+trace the real flow end to end, then climb the ladder. The ladder shortens the
+solution, never the reading.
+
+Climb these rungs in order and stop at the first one that holds:
+
+1. **Does this need to exist at all?** If the need is speculative, skip it and
+   say so.
+2. **Reuse a helper, utility, or pattern already in this codebase.** Look before
+   writing.
+3. **Use the standard library** when it already does the job.
+4. **Use a native platform or database feature** when one covers the need.
+5. **Use an already-installed dependency** when it solves the problem. Never add
+   a new dependency for what a few lines can do.
+6. **Make it one line** when one clear line is sufficient.
+7. **Only then write the minimum code that works.**
+
+**Fix root causes, not symptoms.** Before editing, find every caller of the
+function being changed. One guard in the shared function beats a guard in each
+caller; patching only the reported path leaves sibling callers broken.
+
+**Do not add unrequested abstractions.** No interface with one implementation,
+factory for one product, config for a value that never changes, or scaffolding
+"for later." Prefer deletion over addition, boring over clever, and the fewest
+files. The shortest working diff wins; this also keeps the change inside its
+declared LOC and file estimates.
+
+When a deliberate simplification has a known ceiling, add a `# ponytail:`
+comment that names the ceiling and the upgrade path.
+
+Non-trivial logic ships with the smallest test that fails if the logic breaks:
+no speculative fixtures or per-function suites. Trivial one-liners need no
+dedicated test. Tests still ship in the same PR under the repository's atomicity
+contract.
+
+**Carve-outs — never simplify away:**
+
+- input validation at trust boundaries;
+- error handling that prevents data loss;
+- security measures; or
+- anything the issue's acceptance criteria explicitly require.
+
+Explicit ACs always win over simplification.
 """
 
 
