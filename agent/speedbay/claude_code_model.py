@@ -101,20 +101,23 @@ class ClaudeCodeTokenProvider:
         return json.loads(self.path.read_text())["claudeAiOauth"], "file"
 
     def get_token(self) -> str:
-        """Return a live access token, refreshing (and writing back) near expiry."""
-        creds, source = self.read()
+        """Return a live access token, refreshing (and writing back) near expiry.
+
+        The refresh cycle is serialized under the cross-process file lock for
+        BOTH sources: refresh tokens rotate on use, so two workers refreshing
+        the same expiring credential concurrently would brick the second
+        exchange. The lock file is a machine-wide mutex independent of where
+        the credentials themselves live; the re-read under the lock keeps the
+        re-read's source so the rotated pair is written back where it came from.
+        """
+        creds, _ = self.read()
         if not self._expiring(creds):
             return str(creds["accessToken"])
-        if source == "file":
-            with self._file_lock():
-                # Another process may have refreshed already; keep the re-read's
-                # source too, or a Keychain success here would rotate the
-                # Keychain refresh token while writing the pair to the file.
-                creds, source = self.read()
-                if not self._expiring(creds):
-                    return str(creds["accessToken"])
-                return self._refresh(creds, source)
-        return self._refresh(creds, source)
+        with self._file_lock():
+            creds, source = self.read()  # another process may have refreshed already
+            if not self._expiring(creds):
+                return str(creds["accessToken"])
+            return self._refresh(creds, source)
 
     async def aget_token(self) -> str:
         """Async ``get_token``; refresh HTTP runs off the event loop."""
