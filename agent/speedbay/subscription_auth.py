@@ -1,4 +1,4 @@
-"""Subscription OAuth model auth (OPE-60).
+"""Subscription OAuth model auth (OPE-60, OPE-61).
 
 SPEEDBAY ORG-LAYER FILE. Upstream does not own this module; its only contact
 with upstream source is one marked block at the top of ``make_model`` in
@@ -18,6 +18,10 @@ The OpenAI branch is configuration only: langchain-openai ships
 refresh-aware per-request auth headers) plus the ``chatgpt_oauth``
 login/refresh/token-store module. One-time operator login:
 ``login_chatgpt_device()`` — see OPERATIONS.md § Subscription OAuth.
+
+The Anthropic branch (OPE-61) authenticates with Claude Code's own OAuth
+credentials via :class:`agent.speedbay.claude_code_model.ChatClaudeCode`;
+setup is Claude Code login itself (run ``claude`` once on this machine).
 
 Both this and the upstream class are unofficial subscription-token paths;
 ``_ChatOpenAICodex`` warns "experimental and unofficial" at construction.
@@ -81,6 +85,17 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
     from langchain_openai.chat_models.codex import _ChatOpenAICodex
     from langchain_openai.chatgpt_oauth import _FileChatGPTOAuthTokenProvider
 
+    if model_kwargs.get("api_key") is not None or model_kwargs.get("openai_api_key") is not None:
+        # An explicit caller credential means API-key auth was requested;
+        # honor it via the fall-through instead of stripping it (the OAuth
+        # model rejects api_key kwargs as conflicting).
+        _warn_once(
+            "openai-explicit-api-key",
+            "Subscription auth enabled but an explicit api_key was supplied; "
+            "using the API-key path for this model.",
+        )
+        return None
+
     kwargs: dict[str, Any] = dict(model_kwargs)
     for forced in ("base_url", "use_responses_api", "store", "streaming"):
         kwargs.pop(forced, None)
@@ -89,11 +104,47 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
     if include is None:
         kwargs["include"] = ["reasoning.encrypted_content"]
     elif isinstance(include, list) and "reasoning.encrypted_content" not in include:
-        include.append("reasoning.encrypted_content")
+        # Copy, never append in place: the list object is aliased from the
+        # caller's kwargs (shallow dict copy) and feeds cache keys.
+        kwargs["include"] = [*include, "reasoning.encrypted_content"]
     return _ChatOpenAICodex(
         model=model_name,
         token_provider=_FileChatGPTOAuthTokenProvider(path=store_path),
         **kwargs,
+    )
+
+
+def _anthropic_model(model_name: str, model_kwargs: dict[str, object]) -> Any | None:
+    """Build a ``ChatClaudeCode`` for ``model_name``, or ``None`` to fall through.
+
+    The credential store is probed up front so an unauthenticated machine
+    falls back to API-key auth at construction time instead of failing every
+    model call at request time.
+    """
+    from .claude_code_model import ChatClaudeCode, ClaudeCodeTokenProvider
+
+    provider = ClaudeCodeTokenProvider()
+    try:
+        creds, _ = provider.read()
+        missing = {"accessToken", "refreshToken"} - creds.keys()
+        if missing:
+            raise KeyError(f"credential store missing {sorted(missing)}")
+    except Exception as exc:
+        _warn_once(
+            "anthropic-credentials",
+            "Subscription auth enabled but the Claude Code credential store is "
+            "unreadable (%s); falling back to API-key auth. One-time setup: run "
+            "`claude` on this machine.",
+            exc,
+        )
+        return None
+    # pydantic synthesizes __init__ from field aliases (model_name), but
+    # populate_by_name accepts the canonical names at runtime — the same call
+    # shape init_chat_model uses.
+    return ChatClaudeCode(
+        model=model_name,  # pyright: ignore[reportCallIssue]
+        token_provider=provider,
+        **dict(model_kwargs),
     )
 
 
@@ -109,6 +160,8 @@ def subscription_model(model_id: str, model_kwargs: dict[str, object]) -> Any | 
     provider, _, model_name = model_id.partition(":")
     if provider == "openai":
         return _openai_model(model_name, model_kwargs)
+    if provider == "anthropic":
+        return _anthropic_model(model_name, model_kwargs)
     _warn_once(
         f"provider-{provider}",
         "Subscription auth enabled but provider %r has no subscription branch; "
