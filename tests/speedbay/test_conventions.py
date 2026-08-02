@@ -110,12 +110,17 @@ class TestSimplicityLadder:
     )
 
     def test_augmented_prompt_contains_heading_and_ordered_rungs(self) -> None:
-        assert self._HEADING in SPEEDBAY_CONVENTIONS
+        seen: list[ModelRequest[None]] = []
 
-        result = SpeedbayConventionsMiddleware._augment(_make_request(None))
+        def handler(request: ModelRequest[None]) -> ModelResponse[Any]:
+            seen.append(request)
+            return cast("ModelResponse[Any]", {"messages": []})
 
-        assert result.system_message is not None
-        text = result.system_message.text
+        SpeedbayConventionsMiddleware().wrap_model_call(_make_request(None), cast(Any, handler))
+
+        assert len(seen) == 1
+        assert seen[0].system_message is not None
+        text = seen[0].system_message.text
         assert self._HEADING in text
         positions = [text.index(rung) for rung in self._RUNGS]
         assert positions == sorted(positions)
