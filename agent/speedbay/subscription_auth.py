@@ -85,6 +85,17 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
     from langchain_openai.chat_models.codex import _ChatOpenAICodex
     from langchain_openai.chatgpt_oauth import _FileChatGPTOAuthTokenProvider
 
+    if model_kwargs.get("api_key") is not None or model_kwargs.get("openai_api_key") is not None:
+        # An explicit caller credential means API-key auth was requested;
+        # honor it via the fall-through instead of stripping it (the OAuth
+        # model rejects api_key kwargs as conflicting).
+        _warn_once(
+            "openai-explicit-api-key",
+            "Subscription auth enabled but an explicit api_key was supplied; "
+            "using the API-key path for this model.",
+        )
+        return None
+
     kwargs: dict[str, Any] = dict(model_kwargs)
     for forced in ("base_url", "use_responses_api", "store", "streaming"):
         kwargs.pop(forced, None)
@@ -93,7 +104,9 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
     if include is None:
         kwargs["include"] = ["reasoning.encrypted_content"]
     elif isinstance(include, list) and "reasoning.encrypted_content" not in include:
-        include.append("reasoning.encrypted_content")
+        # Copy, never append in place: the list object is aliased from the
+        # caller's kwargs (shallow dict copy) and feeds cache keys.
+        kwargs["include"] = [*include, "reasoning.encrypted_content"]
     return _ChatOpenAICodex(
         model=model_name,
         token_provider=_FileChatGPTOAuthTokenProvider(path=store_path),
@@ -112,7 +125,10 @@ def _anthropic_model(model_name: str, model_kwargs: dict[str, object]) -> Any | 
 
     provider = ClaudeCodeTokenProvider()
     try:
-        provider.read()
+        creds, _ = provider.read()
+        missing = {"accessToken", "refreshToken"} - creds.keys()
+        if missing:
+            raise KeyError(f"credential store missing {sorted(missing)}")
     except Exception as exc:
         _warn_once(
             "anthropic-credentials",

@@ -134,6 +134,24 @@ class TestOpenAIBranch:
         )
         assert model is not None
 
+    def test_explicit_api_key_falls_through_to_api_key_path(
+        self, monkeypatch: pytest.MonkeyPatch, chatgpt_store: Path
+    ) -> None:
+        """A caller-supplied api_key means API-key auth was requested; honor it."""
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        assert subscription_model(_OPENAI_ID, {"api_key": "sk-explicit"}) is None
+        assert subscription_model(_OPENAI_ID, {"openai_api_key": "sk-explicit"}) is None
+
+    def test_caller_include_list_is_not_mutated(
+        self, monkeypatch: pytest.MonkeyPatch, chatgpt_store: Path
+    ) -> None:
+        """The aliased include list feeds cache keys; it must never grow in place."""
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        include = ["web_search_call.action.sources"]
+        model = subscription_model(_OPENAI_ID, {"include": include, "max_tokens": 10})
+        assert model is not None
+        assert include == ["web_search_call.action.sources"]
+
 
 class TestFailOpenFallthrough:
     """AC: missing store or unsupported provider falls through with one warning."""
@@ -319,3 +337,18 @@ class TestAnthropicBranch:
         assert captured_init["model"] == "anthropic:claude-opus-5"
         warnings = [r for r in caplog.records if "Claude Code credential store" in r.message]
         assert len(warnings) == 1
+
+    def test_empty_store_falls_through_to_api_key_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        captured_init: dict[str, Any],
+    ) -> None:
+        """A parseable store without the token fields must not construct a model."""
+        store = tmp_path / "credentials.json"
+        store.write_text(json.dumps({"claudeAiOauth": {}}))
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setattr(claude_code_model, "_default_credentials_path", lambda: store)
+        monkeypatch.setattr(claude_code_model, "_default_use_keychain", lambda: False)
+        make_model("anthropic:claude-opus-5", max_tokens=64)
+        assert captured_init["model"] == "anthropic:claude-opus-5"

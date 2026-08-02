@@ -107,7 +107,10 @@ class ClaudeCodeTokenProvider:
             return str(creds["accessToken"])
         if source == "file":
             with self._file_lock():
-                creds, _ = self.read()  # another process may have refreshed already
+                # Another process may have refreshed already; keep the re-read's
+                # source too, or a Keychain success here would rotate the
+                # Keychain refresh token while writing the pair to the file.
+                creds, source = self.read()
                 if not self._expiring(creds):
                     return str(creds["accessToken"])
                 return self._refresh(creds, source)
@@ -172,11 +175,20 @@ class ClaudeCodeTokenProvider:
             except Exception as exc:
                 # Refresh tokens rotate on use: losing the rotated pair bricks
                 # the store, so persist to the file fallback instead of dropping.
+                # Stop preferring the now-stale Keychain entry for this process,
+                # or the next refresh would read the consumed token from it.
+                # ponytail: process-local demotion; a restart re-prefers the
+                # Keychain and its first refresh fails once before the operator
+                # re-runs `claude` login.
+                self.use_keychain = False
                 logger.warning("Keychain write-back failed (%s); writing %s", exc, self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(payload)
-        tmp.chmod(0o600)
+        # Create with 0600 before any secret bytes hit disk; write-then-chmod
+        # leaves a umask-default-readable window.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(payload)
         os.replace(tmp, self.path)
 
     @contextmanager
