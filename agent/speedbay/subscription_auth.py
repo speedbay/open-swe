@@ -130,23 +130,40 @@ def _anthropic_model(model_name: str, model_kwargs: dict[str, object]) -> Any | 
     falls back to API-key auth at construction time instead of failing every
     model call at request time.
     """
+    import asyncio
+
     from .claude_code_model import ChatClaudeCode, ClaudeCodeTokenProvider
 
     provider = ClaudeCodeTokenProvider()
     try:
-        creds, _ = provider.read()
-        missing = {"accessToken", "refreshToken"} - creds.keys()
-        if missing:
-            raise KeyError(f"credential store missing {sorted(missing)}")
-    except Exception as exc:
-        _warn_once(
-            "anthropic-credentials",
-            "Subscription auth enabled but the Claude Code credential store is "
-            "unreadable (%s); falling back to API-key auth. One-time setup: run "
-            "`claude` on this machine.",
-            exc,
-        )
-        return None
+        asyncio.get_running_loop()
+    except RuntimeError:
+        in_loop = False
+    else:
+        in_loop = True
+    if not in_loop:
+        # Probe only when no event loop is running: the `security` subprocess
+        # is a blocking os.read, and langgraph dev's blocking-call detector
+        # raises on it inside async graph factories — which this except would
+        # misread as "store unreadable" (observed live 2026-08-02, OPE-67).
+        # ponytail: in-loop construction is optimistic; genuinely missing
+        # credentials then fail per request (aget_token runs off-loop) and the
+        # model-fallback middleware absorbs them, instead of the API-key
+        # fallback this probe provides in loop-free contexts.
+        try:
+            creds, _ = provider.read()
+            missing = {"accessToken", "refreshToken"} - creds.keys()
+            if missing:
+                raise KeyError(f"credential store missing {sorted(missing)}")
+        except Exception as exc:
+            _warn_once(
+                "anthropic-credentials",
+                "Subscription auth enabled but the Claude Code credential store is "
+                "unreadable (%s); falling back to API-key auth. One-time setup: run "
+                "`claude` on this machine.",
+                exc,
+            )
+            return None
     # pydantic synthesizes __init__ from field aliases (model_name), but
     # populate_by_name accepts the canonical names at runtime — the same call
     # shape init_chat_model uses.

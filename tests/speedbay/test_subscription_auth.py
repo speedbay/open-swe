@@ -362,6 +362,25 @@ class TestAnthropicBranch:
         warnings = [r for r in caplog.records if "Claude Code credential store" in r.message]
         assert len(warnings) == 1
 
+    async def test_in_loop_construction_skips_the_blocking_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """langgraph dev forbids blocking reads in the loop; construct optimistically.
+
+        asyncio_mode=auto runs this test inside a running event loop, matching
+        the async graph-factory context where the probe previously exploded
+        into a silent API-key fallback (OPE-67).
+        """
+
+        class _MustNotProbe(ClaudeCodeTokenProvider):
+            def read(self):  # noqa: ANN202
+                raise AssertionError("the blocking probe must not run inside a loop")
+
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setattr(claude_code_model, "ClaudeCodeTokenProvider", _MustNotProbe)
+        model = subscription_model("anthropic:claude-opus-5", {})
+        assert isinstance(model, ChatClaudeCode)
+
     def test_empty_store_falls_through_to_api_key_path(
         self,
         monkeypatch: pytest.MonkeyPatch,
