@@ -152,6 +152,26 @@ class TestOpenAIBranch:
         assert model is not None
         assert include == ["web_search_call.action.sources"]
 
+    def test_max_tokens_is_stripped_for_codex_backend(
+        self, monkeypatch: pytest.MonkeyPatch, chatgpt_store: Path
+    ) -> None:
+        """Codex rejects max_output_tokens; the caller's max_tokens must not bind."""
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        model = subscription_model(_OPENAI_ID, {"max_tokens": 4096})
+        assert model is not None
+        assert model.max_tokens is None
+
+    def test_reasoning_defaults_when_caller_omits_it(
+        self, monkeypatch: pytest.MonkeyPatch, chatgpt_store: Path
+    ) -> None:
+        """Codex masks a missing reasoning field as an overloaded error; default it."""
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        defaulted = subscription_model(_OPENAI_ID, {})
+        explicit = subscription_model(_OPENAI_ID, {"reasoning": {"effort": "high"}})
+        assert defaulted is not None and explicit is not None
+        assert defaulted.reasoning == {"effort": "medium", "summary": "auto"}
+        assert explicit.reasoning == {"effort": "high"}
+
 
 class TestFailOpenFallthrough:
     """AC: missing store or unsupported provider falls through with one warning."""
@@ -294,8 +314,12 @@ class TestChatClaudeCode:
         from anthropic import Omit
 
         headers = self._payload()["extra_headers"]
-        assert headers["authorization"] == "Bearer tok-123"
-        assert isinstance(headers["x-api-key"], Omit)
+        # Exact SDK casing: anthropic merges header dicts case-sensitively and
+        # emits auth as "X-Api-Key"; lowercase keys would strip nothing.
+        assert headers["Authorization"] == "Bearer tok-123"
+        assert isinstance(headers["X-Api-Key"], Omit)
+        assert "authorization" not in headers
+        assert "x-api-key" not in headers
         assert headers["user-agent"].startswith("claude-cli/")
         assert headers["x-app"] == "cli"
 
