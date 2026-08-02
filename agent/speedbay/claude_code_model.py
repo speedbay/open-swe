@@ -260,9 +260,13 @@ class ChatClaudeCode(ChatAnthropic):
 
         request_betas = [str(beta) for beta in payload.get("betas") or []]
         flags = list(dict.fromkeys([*_OAUTH_BETAS, *request_betas]))
+        # Exact SDK casing is load-bearing: anthropic's _build_headers merges
+        # header dicts case-SENSITIVELY (its own comment) and emits the auth
+        # header as "X-Api-Key" — a lowercase Omit strips nothing and the
+        # placeholder key reaches the server (observed live 401, 2026-08-02).
         oauth_headers: dict[str, Any] = {
-            "authorization": f"Bearer {token}",
-            "x-api-key": Omit(),
+            "Authorization": f"Bearer {token}",
+            "X-Api-Key": Omit(),
             "anthropic-beta": ",".join(flags),
             "user-agent": f"claude-cli/{_CLAUDE_CLI_VERSION}",
             "x-app": "cli",

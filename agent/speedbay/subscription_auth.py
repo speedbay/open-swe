@@ -97,9 +97,18 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
         return None
 
     kwargs: dict[str, Any] = dict(model_kwargs)
-    for forced in ("base_url", "use_responses_api", "store", "streaming"):
+    # max_tokens: the codex backend rejects the mapped max_output_tokens field
+    # (400 "Unsupported parameter", observed live 2026-08-02); OPE-60 recorded
+    # stripping it as the decided fallback. The backend bounds output itself.
+    for forced in ("base_url", "use_responses_api", "store", "streaming", "max_tokens"):
         kwargs.pop(forced, None)
     kwargs.setdefault("output_version", "responses/v1")
+    # The codex backend masks a missing `reasoning` field as "Our servers are
+    # currently overloaded" (observed live 2026-08-02). Every production caller
+    # sends one via openai_reasoning_for; default defensively for the rest.
+    # Literal mirrors DEFAULT_LLM_REASONING (importing it would be circular:
+    # agent.utils.model imports this module).
+    kwargs.setdefault("reasoning", {"effort": "medium", "summary": "auto"})
     include = kwargs.get("include")
     if include is None:
         kwargs["include"] = ["reasoning.encrypted_content"]
