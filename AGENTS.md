@@ -8,6 +8,32 @@ Open SWE is an open-source coding-agent framework built on **LangGraph** + **Dee
 
 A separate **reviewer** graph runs read-only code reviews on PRs, and a **review-style analyzer** graph learns per-repo review style from historical PRs.
 
+## Fork boundary
+
+This repository is a deployment fork of `langchain-ai/open-swe`, tracked by the
+`upstream` remote. [`FORK.md`](FORK.md) is the merge contract; read it before
+touching any upstream-owned file.
+
+Keep Speed Bay code in org-owned paths by default:
+
+- `agent/speedbay/`
+- `speedbay/`
+- `tests/speedbay/`
+- fork-owned docs: `FORK.md`, `OPERATIONS.md`, `SETUP.md`, and `AGENTS.md`
+
+Do not edit upstream logic in place. Register org-owned behavior through a
+sanctioned seam instead. Any upstream-owned edit must be a minimal registration,
+marked in code with `SPEEDBAY REGISTRATION` or `SPEEDBAY DEVIATION`, with the
+matching registration or deviation row added to `FORK.md` in the same PR.
+
+This is a rebuttable default, not a ban: prefer org-owned indirection, but take
+the upstream edit when indirection would cost more than its recurring merge
+burden. Record that decision in the `FORK.md` deviations table either way.
+
+See the worked examples in `FORK.md`: `agent/prompt.py` is deliberately not
+patched, while the required `pyproject.toml` dependency floor is pinned in place.
+Do not copy its tables or merge re-check procedure here.
+
 ## Commands
 
 Dependencies are managed with **uv**. Tests use pytest (`asyncio_mode = "auto"`). Lint/format is **ruff** (line-length 100, target py311). Type checking is **basedpyright** (`typeCheckingMode = "standard"`). `requires-python = ">=3.11"`; `langgraph.json` pins the runtime to 3.12.
