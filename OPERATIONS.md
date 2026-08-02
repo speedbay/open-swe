@@ -297,8 +297,8 @@ speedbay/openswe status   # processes, local/public health, live sandbox contain
 speedbay/openswe stop     # kills both; confirms the public URL went offline (530)
 ```
 
-`start` fails fast when the docker daemon is down, when either health check
-doesn't reach 200, or when an instance is already running. Logs:
+`start` auto-starts colima when the docker daemon is down. Machines without colima still
+fail fast, as do failed health checks and attempts to start a duplicate instance. Logs:
 `/tmp/openswe-backend.log`, `/tmp/openswe-tunnel.log`. Once `start` reports
 LIVE, every `@openswe` Linear comment triggers a containerized run.
 
