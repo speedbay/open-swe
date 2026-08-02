@@ -16,10 +16,12 @@ import argparse
 import os
 import pathlib
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -90,8 +92,12 @@ def _spawn(cmd: list[str], log_path: str) -> None:
     """Detach ``cmd`` with output to ``log_path``; survives this script exiting."""
     with open(log_path, "w") as log:
         subprocess.Popen(
-            cmd, cwd=REPO, stdout=log, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, start_new_session=True,
+            cmd,
+            cwd=REPO,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
         )
 
 
@@ -105,12 +111,28 @@ def _tail(log_path: str, lines: int = 5) -> str:
         return f"(no log at {log_path})"
 
 
+def ensure_docker_daemon() -> bool:
+    if subprocess.run(["docker", "info"], capture_output=True).returncode == 0:
+        return True
+    if not shutil.which("colima"):
+        return False
+
+    print("docker daemon unreachable; starting colima...")
+    try:
+        subprocess.run(["colima", "start"], capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+
+
 def start() -> int:
     if backend_pids() or tunnel_pids():
         print("already running — refusing to start duplicates:")
         return status() or 1
-    if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
-        print("FAIL: docker daemon unreachable (start Docker Desktop / colima first)", file=sys.stderr)
+    if not ensure_docker_daemon():
+        print(
+            "FAIL: docker daemon unreachable (start Docker Desktop / colima first)", file=sys.stderr
+        )
         return 1
 
     print("starting backend...")
@@ -163,9 +185,17 @@ def status() -> int:
     print(f"tunnel health   ({PUBLIC_URL}): {_http_code(PUBLIC_URL, timeout=8)}")
     print("sandboxes:")
     proc = subprocess.run(
-        ["docker", "ps", "-a", "--filter", "label=openswe.sandbox",
-         "--format", "  {{.Names}}  {{.Status}}"],
-        capture_output=True, text=True,
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            "label=openswe.sandbox",
+            "--format",
+            "  {{.Names}}  {{.Status}}",
+        ],
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0:
         print(f"  (docker ps failed: {proc.stderr.strip() or 'unknown error'})")
