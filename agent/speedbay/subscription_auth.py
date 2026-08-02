@@ -1,4 +1,4 @@
-"""Subscription OAuth model auth (OPE-60).
+"""Subscription OAuth model auth (OPE-60, OPE-61).
 
 SPEEDBAY ORG-LAYER FILE. Upstream does not own this module; its only contact
 with upstream source is one marked block at the top of ``make_model`` in
@@ -18,6 +18,10 @@ The OpenAI branch is configuration only: langchain-openai ships
 refresh-aware per-request auth headers) plus the ``chatgpt_oauth``
 login/refresh/token-store module. One-time operator login:
 ``login_chatgpt_device()`` — see OPERATIONS.md § Subscription OAuth.
+
+The Anthropic branch (OPE-61) authenticates with Claude Code's own OAuth
+credentials via :class:`agent.speedbay.claude_code_model.ChatClaudeCode`;
+setup is Claude Code login itself (run ``claude`` once on this machine).
 
 Both this and the upstream class are unofficial subscription-token paths;
 ``_ChatOpenAICodex`` warns "experimental and unofficial" at construction.
@@ -97,6 +101,37 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
     )
 
 
+def _anthropic_model(model_name: str, model_kwargs: dict[str, object]) -> Any | None:
+    """Build a ``ChatClaudeCode`` for ``model_name``, or ``None`` to fall through.
+
+    The credential store is probed up front so an unauthenticated machine
+    falls back to API-key auth at construction time instead of failing every
+    model call at request time.
+    """
+    from .claude_code_model import ChatClaudeCode, ClaudeCodeTokenProvider
+
+    provider = ClaudeCodeTokenProvider()
+    try:
+        provider.read()
+    except Exception as exc:
+        _warn_once(
+            "anthropic-credentials",
+            "Subscription auth enabled but the Claude Code credential store is "
+            "unreadable (%s); falling back to API-key auth. One-time setup: run "
+            "`claude` on this machine.",
+            exc,
+        )
+        return None
+    # pydantic synthesizes __init__ from field aliases (model_name), but
+    # populate_by_name accepts the canonical names at runtime — the same call
+    # shape init_chat_model uses.
+    return ChatClaudeCode(
+        model=model_name,  # pyright: ignore[reportCallIssue]
+        token_provider=provider,
+        **dict(model_kwargs),
+    )
+
+
 def subscription_model(model_id: str, model_kwargs: dict[str, object]) -> Any | None:
     """Return a subscription-OAuth chat model for ``model_id``, or ``None``.
 
@@ -109,6 +144,8 @@ def subscription_model(model_id: str, model_kwargs: dict[str, object]) -> Any | 
     provider, _, model_name = model_id.partition(":")
     if provider == "openai":
         return _openai_model(model_name, model_kwargs)
+    if provider == "anthropic":
+        return _anthropic_model(model_name, model_kwargs)
     _warn_once(
         f"provider-{provider}",
         "Subscription auth enabled but provider %r has no subscription branch; "
