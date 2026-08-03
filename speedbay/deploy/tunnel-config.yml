@@ -1,0 +1,6 @@
+tunnel: openswe
+credentials-file: /home/openswe/.cloudflared/66d09a43-7dac-4001-9adb-b6df1806796d.json
+ingress:
+  - hostname: openswe.speedbay.com
+    service: http://localhost:2024
+  - service: http_status:404

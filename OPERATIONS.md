@@ -302,6 +302,25 @@ fail fast, as do failed health checks and attempts to start a duplicate instance
 `/tmp/openswe-backend.log`, `/tmp/openswe-tunnel.log`. Once `start` reports
 LIVE, every `@openswe` Linear comment triggers a containerized run.
 
+### On the Azure host (systemd)
+
+Install the deployment units as symlinks so a checkout update changes the source files in place,
+then enable and start both processes:
+
+```bash
+sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-backend.service /etc/systemd/system/openswe-backend.service
+sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-tunnel.service /etc/systemd/system/openswe-tunnel.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now openswe-backend.service openswe-tunnel.service
+```
+
+Use `systemctl status openswe-backend.service openswe-tunnel.service` for current state and
+`journalctl -u openswe-backend.service -u openswe-tunnel.service` for supervisor events. Process
+output remains in `/tmp/openswe-backend.log` and `/tmp/openswe-tunnel.log`. Do not mix
+`speedbay/openswe start` or `stop` with the units: `start` only refuses duplicates rather than
+coordinating with systemd, and `stop` would make systemd restart the processes. Keep
+`speedbay/openswe status` as the operator health and sandbox-status tool.
+
 ## Dashboard (OPE-11)
 
 The in-tree dashboard is the forge-dash replacement — we write no custom UI.
