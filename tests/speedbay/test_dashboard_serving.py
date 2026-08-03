@@ -12,9 +12,9 @@ def test_caddy_proxies_dashboard_api_before_spa_fallback() -> None:
     caddyfile = (DEPLOY_DIR / "Caddyfile").read_text()
 
     proxy = "reverse_proxy /dashboard/api/* localhost:2024"
-    fallback = "try_files {path} /index.html"
+    fallback = "try_files {path} /_shell.html"
     assert ":8080 {" in caddyfile
-    assert "root * /home/openswe/open-swe/ui/dist" in caddyfile
+    assert "root * /home/openswe/open-swe/ui/.output/public" in caddyfile
     assert proxy in caddyfile
     assert fallback in caddyfile
     assert "file_server" in caddyfile
