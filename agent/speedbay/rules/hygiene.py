@@ -14,8 +14,11 @@ Strings in, verdict values out. No git, no I/O.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 import attrs
+
+from .findings import GateFinding, GateSeverity
 
 # Provenance: hygiene-sections.mjs HYGIENE_SECTIONS (canonical order).
 HYGIENE_SECTIONS = ("Why needed", "Solved / fixed", "Workflow enabled / fixed", "Verification")
@@ -186,3 +189,21 @@ def check_hygiene(title: str, body: str, branch: str, issue_id: str) -> tuple[Vi
         check_body_sections(body, issue_id),
     )
     return tuple(v for v in checks if v is not None)
+
+
+def hygiene_findings(violations: Iterable[Violation]) -> tuple[GateFinding, ...]:
+    """Classify hygiene ``Violation``s as gate findings (OPE-75).
+
+    Hygiene breaches are ``REMEDIABLE`` by declaration: title/body/branch
+    fixes are mechanical, never touch the diff, and the required format is
+    already in the system prompt — the agent retries in-run.
+    """
+    return tuple(
+        GateFinding(
+            domain="hygiene",
+            rule=violation.rule,
+            message=violation.message,
+            severity=GateSeverity.REMEDIABLE,
+        )
+        for violation in violations
+    )

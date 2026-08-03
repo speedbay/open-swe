@@ -13,18 +13,31 @@ forms) runs on both paths so nothing routes around the gate.
 Fail-open for infrastructure problems only **before a trustworthy rule
 verdict exists** (no thread id, unreachable sandbox, undiffable base), per
 quality_gates; rule verdicts always block, and a truncated numstat blocks as
-oversized (missing rows would undercount). The **first** atomicity or
-commit-hygiene violation is an immediate human decision point (OPE-75 — no
-corrective-round budget): the middleware records a durable pending approval
-**before** posting the Linear breach comment itself (post-once via
-``notified``, error-level log on failure), then ends the active run — the
-blocking ToolMessage (``recoverable_by_agent: false``) is returned through
-``Command(update={"messages": [...]}, goto=END)`` and the ``before_model``
-hook jumps the loop to end, so no subsequent model turn runs. A durable-store
-fault **after** a rule verdict also fails closed and ends the run with
-explicit infrastructure evidence. A dashboard approve grants a one-time,
-fingerprint-bound exemption; ``consume_gate_approval`` spends it on the next
-gate attempt, and a new commit re-gates. A reject leaves the run ended.
+oversized (missing rows would undercount).
+
+The gate's response is split by the rule's declared severity
+(``rules/findings.py``, OPE-75):
+
+- **HARD (atomicity)** — the first violation is an immediate human decision
+  point (no corrective-round budget): the middleware records a durable
+  pending approval **before** posting the Linear breach comment itself
+  (post-once via ``notified``, error-level log on failure), then ends the
+  active run — the blocking ToolMessage (``recoverable_by_agent: false``) is
+  returned through ``Command(update={"messages": [...]}, goto=END)`` and the
+  ``before_model`` hook jumps the loop to end, so no subsequent model turn
+  runs. A durable-store fault **after** a rule verdict also fails closed and
+  ends the run with explicit infrastructure evidence. A dashboard approve
+  grants a one-time, fingerprint-bound exemption; ``consume_gate_approval``
+  spends it on the next gate attempt, and a new commit re-gates. A reject
+  leaves the run ended.
+- **REMEDIABLE (hygiene)** — title/body/branch fixes are mechanical and never
+  touch the diff, so a hygiene-only failure returns an agent-recoverable
+  corrective ToolMessage embedding the required format: no approval card, no
+  Linear post, the run continues. Budgeted at ``HYGIENE_REMEDIATION_ATTEMPTS``
+  failed attempts per thread; exhaustion escalates the run through the HARD
+  path (disposition ``escalated_after_remediation_budget``) — severity
+  classification itself never mutates. A mixed failure (both families)
+  resolves to the stricter response immediately.
 """
 
 from __future__ import annotations
@@ -51,7 +64,7 @@ from ..utils.sandbox_state import get_sandbox_backend
 
 # Tunable settings live in config.py (OPE-31); both gates share the sandbox
 # workspace root and diff timeout through it.
-from .config import DIFF_TIMEOUT_SECONDS, WORKSPACE
+from .config import DIFF_TIMEOUT_SECONDS, HYGIENE_REMEDIATION_ATTEMPTS, WORKSPACE
 from .gate_approval import (
     GATE_APPROVAL_APPROVED,
     GATE_APPROVAL_PENDING,
@@ -65,16 +78,38 @@ from .gate_approval import (
     pr_metadata_digest,
 )
 from .quality_gates import _tool_args, _tool_call_id, _tool_name, resolve_repo_dir
-from .rules.atomicity import check_atomicity, parse_numstat
-from .rules.hygiene import check_attribution, check_hygiene
+from .rules.atomicity import atomicity_findings, check_atomicity, parse_numstat
+from .rules.findings import GateFinding, GateSeverity
+from .rules.hygiene import check_attribution, check_hygiene, hygiene_findings
 
 logger = logging.getLogger(__name__)
 
 _EVIDENCE_TAIL_CHARS = 2000
 
-# Block-message codes that end the active run. The shell-fallback block is
-# deliberately absent: the agent should retry via open_pull_request instead.
+# Block-message codes that end the active run. The shell-fallback block and
+# the hygiene corrective-retry block are deliberately absent: both leave the
+# run alive so the agent can retry via open_pull_request.
 _HALT_CODES = frozenset({"pr_standards_failed", "pr_standards_store_error"})
+
+# Run dispositions reported in the block payload. Disposition is middleware
+# policy (what happened to this run); finding severity is the rule's
+# intrinsic classification and never mutates (rules/findings.py).
+DISPOSITION_HUMAN_DECISION = "human_decision"
+DISPOSITION_AGENT_REMEDIATION = "agent_remediation"
+DISPOSITION_ESCALATED = "escalated_after_remediation_budget"
+
+# The literal contract the agent must satisfy, embedded in every hygiene
+# corrective block so remediation is one-shot (the same contract already
+# rides the system prompt via SpeedbayConventionsMiddleware).
+_HYGIENE_FORMAT = (
+    "Required format — title: '<TEAM>-NNN: <imperative subject>' using the "
+    "triggering issue id; branch: '<team>-nnn-<slug>'; body: 'Closes "
+    "<TEAM>-NNN' before the first heading, then exactly these sections in "
+    "order, each non-empty: '## Why needed', '## Solved / fixed', "
+    "'## Workflow enabled / fixed', '## Verification'; no AI attribution "
+    "anywhere. Fix the PR title/body/branch and retry open_pull_request; do "
+    "not amend commits or change the diff."
+)
 
 _FALLBACK_ERROR = (
     "New pull requests must be opened with the open_pull_request tool so the "
@@ -174,19 +209,23 @@ def _block_message(
     *,
     advice: list[str],
     verdict: Any,
-    violations: tuple[Any, ...],
+    findings: tuple[GateFinding, ...],
+    disposition: str,
     code: str = "pr_standards_failed",
+    recoverable: bool = False,
     fingerprint: str | None = None,
     approval_url: str | None = None,
     approval_status: str | None = None,
 ) -> ToolMessage:
-    """Non-recoverable gate-block ToolMessage: every rule-verdict block ends the run."""
+    """Gate-block ToolMessage. ``findings`` severities always report the rules'
+    intrinsic classification, even when the run's ``disposition`` escalated."""
     content: dict[str, Any] = {
         "status": "error",
         "error_type": "PRStandardsFailed",
         "code": code,
-        "recoverable_by_agent": False,
+        "recoverable_by_agent": recoverable,
         "error": " ".join(advice),
+        "disposition": disposition,
         "atomicity": {
             "passed": verdict.passed,
             "raw_loc": verdict.raw_loc,
@@ -194,7 +233,15 @@ def _block_message(
             "production_files": verdict.production_files,
             "exceeded": list(verdict.exceeded),
         },
-        "hygiene_violations": [{"rule": v.rule, "message": v.message} for v in violations],
+        "findings": [
+            {
+                "domain": f.domain,
+                "rule": f.rule,
+                "message": f.message,
+                "severity": f.severity.value,
+            }
+            for f in findings
+        ],
     }
     if fingerprint is not None:
         content["gate_approval"] = {
@@ -332,6 +379,14 @@ class PRStandardsMiddleware(AgentMiddleware):
 
     state_schema = AgentState
 
+    def __init__(self) -> None:
+        super().__init__()
+        # ponytail: in-process hygiene remediation counter — a backend restart
+        # resets it, which only re-grants remediation attempts; the HARD path
+        # and its durable records are unaffected. Durable counting would
+        # resurrect the rounds machinery OPE-75 removed.
+        self._hygiene_failures: dict[str, int] = {}
+
     def _fallback_block(self, request: ToolCallRequest) -> ToolMessage | None:
         if _tool_name(request) != "execute":
             return None
@@ -395,7 +450,9 @@ class PRStandardsMiddleware(AgentMiddleware):
         """Async mirror of ``before_model`` (the agent runs on the async path)."""
         return self.before_model(state, runtime)
 
-    async def _gate_open_pull_request(self, request: ToolCallRequest) -> Command | None:
+    async def _gate_open_pull_request(
+        self, request: ToolCallRequest
+    ) -> Command | ToolMessage | None:
         try:
             args = _tool_args(request)
             raw_title, raw_body = args.get("title"), args.get("body")
@@ -458,23 +515,58 @@ class PRStandardsMiddleware(AgentMiddleware):
             logger.exception("PR standards gate: gate infrastructure error — passing")
             return None
 
-        if verdict.passed and not violations:
+        findings = (*atomicity_findings(verdict), *hygiene_findings(violations))
+        if not findings:
+            self._hygiene_failures.pop(str(thread_id), None)
             return None
 
+        hard = any(f.severity is GateSeverity.HARD for f in findings)
         failed_rule_ids = ["atomicity"] * (not verdict.passed) + [v.rule for v in violations]
         advice: list[str] = []
         if not verdict.passed:
             advice.append(
                 "Atomicity caps exceeded: " + "; ".join(verdict.exceeded) + ". Split the "
                 "change into smaller, independently reviewable PRs (one vertical slice "
-                "each) and retry open_pull_request per slice."
+                "each)."
             )
         if violations:
             advice.append(
                 "Commit hygiene violations: "
                 + "; ".join(f"[{v.rule}] {v.message}" for v in violations)
-                + ". Fix the PR title/body/branch and retry."
+                + "."
             )
+
+        if not hard:
+            # REMEDIABLE-only (hygiene): agent-correctable in-run, budgeted.
+            attempts = self._hygiene_failures.get(str(thread_id), 0) + 1
+            self._hygiene_failures[str(thread_id)] = attempts
+            if attempts < HYGIENE_REMEDIATION_ATTEMPTS:
+                logger.info(
+                    "PR standards gate: hygiene corrective retry (attempt %d/%d) — %s",
+                    attempts,
+                    HYGIENE_REMEDIATION_ATTEMPTS,
+                    [f.rule for f in findings],
+                )
+                advice.append(_HYGIENE_FORMAT)
+                advice.append(
+                    f"This is failed attempt {attempts} of "
+                    f"{HYGIENE_REMEDIATION_ATTEMPTS}; on the last failure the run "
+                    "pauses for human approval."
+                )
+                return _block_message(
+                    request,
+                    advice=advice,
+                    verdict=verdict,
+                    findings=findings,
+                    disposition=DISPOSITION_AGENT_REMEDIATION,
+                    code="pr_standards_hygiene_retry",
+                    recoverable=True,
+                )
+            advice.append(
+                f"Hygiene remediation budget exhausted ({attempts} failed attempts) — "
+                "escalating to human approval."
+            )
+
         return await self._durable_block(
             request,
             thread_id=str(thread_id),
@@ -485,7 +577,8 @@ class PRStandardsMiddleware(AgentMiddleware):
             issue_id=issue_id,
             issue_uuid=_issue_uuid(configurable),
             verdict=verdict,
-            violations=violations,
+            findings=findings,
+            disposition=DISPOSITION_HUMAN_DECISION if hard else DISPOSITION_ESCALATED,
             failed_rule_ids=[str(rule) for rule in failed_rule_ids],
             metadata_digest=pr_metadata_digest(title, body, branch),
             evidence=_evidence_tail(numstat),
@@ -504,7 +597,8 @@ class PRStandardsMiddleware(AgentMiddleware):
         issue_id: str | None,
         issue_uuid: str | None,
         verdict: Any,
-        violations: tuple[Any, ...],
+        findings: tuple[GateFinding, ...],
+        disposition: str,
         failed_rule_ids: list[str],
         metadata_digest: str,
         evidence: str,
@@ -559,7 +653,8 @@ class PRStandardsMiddleware(AgentMiddleware):
                             "open_pull_request with this diff."
                         ],
                         verdict=verdict,
-                        violations=violations,
+                        findings=findings,
+                        disposition=DISPOSITION_HUMAN_DECISION,
                         fingerprint=fingerprint,
                         approval_url=approval_url,
                         approval_status=GATE_APPROVAL_REJECTED,
@@ -593,16 +688,17 @@ class PRStandardsMiddleware(AgentMiddleware):
                 + f". Do not retry open_pull_request — {surfacing}"
             )
             logger.info(
-                "PR standards gate: halting open_pull_request — atomicity=%s hygiene=%s",
-                verdict.exceeded,
-                [v.rule for v in violations],
+                "PR standards gate: halting open_pull_request (%s) — %s",
+                disposition,
+                [f.rule for f in findings],
             )
             return _halt(
                 _block_message(
                     request,
                     advice=advice,
                     verdict=verdict,
-                    violations=violations,
+                    findings=findings,
+                    disposition=disposition,
                     fingerprint=fingerprint,
                     approval_url=approval_url,
                     approval_status=GATE_APPROVAL_PENDING,
@@ -625,7 +721,8 @@ class PRStandardsMiddleware(AgentMiddleware):
                     request,
                     advice=failed_advice,
                     verdict=verdict,
-                    violations=violations,
+                    findings=findings,
+                    disposition=disposition,
                     code="pr_standards_store_error",
                 )
             )

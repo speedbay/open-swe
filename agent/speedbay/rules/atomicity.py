@@ -17,6 +17,8 @@ import re
 
 import attrs
 
+from .findings import GateFinding, GateSeverity
+
 # Provenance: warehouse harness extensions/atomicity-guardrails.ts
 # SCOPE_CATEGORY_WEIGHTS. production/config/migration are full weight; tests
 # reduced; documentation low; generated/lockfile/fixture/snapshot excluded.
@@ -232,4 +234,22 @@ def check_atomicity(
         production_files=production_files,
         exceeded=tuple(exceeded),
         files=tuple(files),
+    )
+
+
+def atomicity_findings(verdict: AtomicityVerdict) -> tuple[GateFinding, ...]:
+    """Classify an ``AtomicityVerdict`` as gate findings (OPE-75).
+
+    Atomicity breaches are ``HARD`` by declaration: re-partitioning
+    implemented work is a human decision, never an in-run remediation. One
+    finding per exceeded cap; a passing verdict yields no findings.
+    """
+    return tuple(
+        GateFinding(
+            domain="atomicity",
+            rule="atomicity",
+            message=reason,
+            severity=GateSeverity.HARD,
+        )
+        for reason in verdict.exceeded
     )

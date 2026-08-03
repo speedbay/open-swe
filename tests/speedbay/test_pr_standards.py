@@ -233,20 +233,72 @@ def test_oversized_diff_halts_with_cap_and_split_instruction(monkeypatch) -> Non
     )
     assert payload["code"] == "pr_standards_failed"
     assert payload["recoverable_by_agent"] is False
+    assert payload["disposition"] == "human_decision"
     assert "effective LOC 400 exceeds the Track-A cap of 300" in payload["atomicity"]["exceeded"][0]
     assert "Split the change" in payload["error"]
     assert payload["atomicity"]["raw_loc"] == 400
     assert payload["gate_approval"]["status"] == "pending"
+    assert all(f["severity"] == "hard" for f in payload["findings"])
 
 
-def test_hygiene_violations_halt_with_rule_names(monkeypatch) -> None:
+def test_hygiene_only_violations_get_corrective_retry(monkeypatch) -> None:
+    """OPE-75: hygiene is REMEDIABLE — an agent-recoverable corrective block
+    embedding the required format, no Command, no approval card."""
+    _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"))
+    request = _request(title="update stuff", body=_body() + "\nMade by [Open SWE]\n")
+    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
+    assert payload["code"] == "pr_standards_hygiene_retry"
+    assert payload["recoverable_by_agent"] is True
+    assert payload["disposition"] == "agent_remediation"
+    assert "gate_approval" not in payload  # no card, no fingerprint
+    rules = {f["rule"] for f in payload["findings"]}
+    assert {"title-format", "ai-attribution"} <= rules
+    assert all(f["severity"] == "remediable" for f in payload["findings"])
+    assert "[title-format]" in payload["error"]
+    assert "## Why needed" in payload["error"]  # the literal format is embedded
+
+
+def test_hygiene_budget_exhaustion_escalates_to_approval(monkeypatch) -> None:
+    """The third consecutive hygiene-only failure ends the run through the
+    approval path; finding severity still reports 'remediable'."""
     _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"))
     _stub_gate_store(monkeypatch)
-    request = _request(title="update stuff", body=_body() + "\nMade by [Open SWE]\n")
+    middleware = PRStandardsMiddleware()
+    request = _request(title="update stuff")
+    for _ in range(2):
+        payload = _payload(_run(middleware.awrap_tool_call(request, _fail_handler)))
+        assert payload["code"] == "pr_standards_hygiene_retry"
+    payload = _halt_payload(_run(middleware.awrap_tool_call(request, _fail_handler)))
+    assert payload["code"] == "pr_standards_failed"
+    assert payload["recoverable_by_agent"] is False
+    assert payload["disposition"] == "escalated_after_remediation_budget"
+    assert payload["gate_approval"]["status"] == "pending"
+    # Classification never mutates: the escalated findings stay remediable.
+    assert all(f["severity"] == "remediable" for f in payload["findings"])
+
+
+def test_passing_gate_resets_hygiene_budget(monkeypatch) -> None:
+    middleware = PRStandardsMiddleware()
+    _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"))
+    bad = _request(title="update stuff")
+    for _ in range(2):
+        _payload(_run(middleware.awrap_tool_call(bad, _fail_handler)))
+    assert _run(middleware.awrap_tool_call(_request(), _pass_handler)) == "pr-opened"
+    # The pass cleared the counter: the next failure is attempt 1, not exhaustion.
+    payload = _payload(_run(middleware.awrap_tool_call(bad, _fail_handler)))
+    assert payload["code"] == "pr_standards_hygiene_retry"
+
+
+def test_mixed_atomicity_and_hygiene_halts_immediately(monkeypatch) -> None:
+    """A HARD finding dominates: mixed failures never get a hygiene retry."""
+    _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
+    _stub_gate_store(monkeypatch)
+    request = _request(title="update stuff")
     payload = _halt_payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
-    rules = {v["rule"] for v in payload["hygiene_violations"]}
-    assert {"title-format", "ai-attribution"} <= rules
-    assert "[title-format]" in payload["error"]
+    assert payload["disposition"] == "human_decision"
+    severities = {f["rule"]: f["severity"] for f in payload["findings"]}
+    assert severities["atomicity"] == "hard"
+    assert severities["title-format"] == "remediable"
 
 
 def test_truncated_numstat_halts_as_oversized(monkeypatch) -> None:
@@ -266,14 +318,14 @@ def test_truncated_numstat_halts_as_oversized(monkeypatch) -> None:
 
 def test_no_linear_issue_runs_attribution_check_only(monkeypatch) -> None:
     _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"), issue=None)
-    _stub_gate_store(monkeypatch)
     # Bad title passes without an expected issue id...
     request = _request(title="update stuff")
     assert _run(PRStandardsMiddleware().awrap_tool_call(request, _pass_handler)) == "pr-opened"
-    # ...but AI attribution still halts.
+    # ...but AI attribution still blocks (remediable — corrective retry).
     request = _request(title="update stuff", body="Made by [Open SWE]")
-    payload = _halt_payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
-    assert [v["rule"] for v in payload["hygiene_violations"]] == ["ai-attribution"]
+    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
+    assert [f["rule"] for f in payload["findings"]] == ["ai-attribution"]
+    assert payload["code"] == "pr_standards_hygiene_retry"
 
 
 def _stub_gate_store(monkeypatch: pytest.MonkeyPatch) -> None:
