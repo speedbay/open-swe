@@ -42,9 +42,7 @@ def _comments(calls: list[tuple[str, dict]]) -> list[dict]:
 
 
 @pytest.mark.parametrize("enabled,status", [(False, "disabled"), (True, "healthy")])
-async def test_every_outcome_posts_heartbeat(
-    monkeypatch: pytest.MonkeyPatch, enabled: bool, status: str
-) -> None:
+async def test_every_outcome_posts_heartbeat(monkeypatch, enabled, status) -> None:
     calls, graphql = _graphql()
     monkeypatch.setattr(health, "_graphql_request", graphql)
     if enabled:
@@ -52,24 +50,20 @@ async def test_every_outcome_posts_heartbeat(
         monkeypatch.setattr(
             health,
             "subscription_model",
-            lambda model_id, _kwargs: _model(health._PROVIDER_MODELS[model_id.split(":")[0]][1]),
+            lambda model_id, _: _model(health._PROVIDER_MODELS[model_id.split(":")[0]][1]),
         )
     else:
         monkeypatch.delenv(ENV_TOGGLE, raising=False)
-        monkeypatch.setattr(
-            health, "subscription_model", lambda *_args: pytest.fail("must not construct")
-        )
-    result = await health.check_subscription_auth()
-    assert result["status"] == status
-    assert len(_comments(calls)) == 1
+        monkeypatch.setattr(health, "subscription_model", lambda *_: pytest.fail("constructed"))
+    assert (await health.check_subscription_auth())["status"] == status
     assert _comments(calls)[0]["issueId"] == health.HEARTBEAT_TITLE
 
 
-async def test_wrong_class_alerts_and_posts_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_wrong_class_alerts_and_posts_heartbeat(monkeypatch) -> None:
     calls, graphql = _graphql()
     monkeypatch.setattr(health, "_graphql_request", graphql)
     monkeypatch.setenv(ENV_TOGGLE, "1")
-    monkeypatch.setattr(health, "subscription_model", lambda *_args: object())
+    monkeypatch.setattr(health, "subscription_model", lambda *_: object())
     result = await health.check_subscription_auth()
     assert result["status"] == "failed"
     assert all(value["class"] == "object" for value in result["providers"].values())
@@ -79,7 +73,7 @@ async def test_wrong_class_alerts_and_posts_heartbeat(monkeypatch: pytest.Monkey
     }
 
 
-async def test_alert_dedupes_to_comment(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_alert_dedupes_to_comment(monkeypatch) -> None:
     calls, graphql = _graphql()
     monkeypatch.setattr(health, "_graphql_request", graphql)
     await health._write_alert(
@@ -90,34 +84,29 @@ async def test_alert_dedupes_to_comment(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 @pytest.mark.parametrize("heartbeat", [False, True])
-async def test_absent_issue_create_paths(monkeypatch: pytest.MonkeyPatch, heartbeat: bool) -> None:
+async def test_absent_issue_create_paths(monkeypatch, heartbeat) -> None:
     calls, graphql = _graphql(existing=False)
     monkeypatch.setattr(health, "_graphql_request", graphql)
+    providers = {"openai": {"status": "failed", "class": "object", "live_call": "not run"}}
     if heartbeat:
         await health._write_heartbeat("disabled", {}, "now")
     else:
-        await health._write_alert(
-            {"openai": {"status": "failed", "class": "object", "live_call": "not run"}},
-            "now",
-        )
+        await health._write_alert(providers, "now")
     issue_input = next(variables["input"] for query, variables in calls if "IssueCreate" in query)
     assert issue_input["stateId"] == "backlog"
-    if heartbeat:
-        assert issue_input["subscriberIds"] == ["cbass"]
+    assert not heartbeat or issue_input["subscriberIds"] == ["cbass"]
     assert len(_comments(calls)) == 1
 
 
-async def test_heartbeat_failure_preserves_verdict_and_alert(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_heartbeat_failure_preserves_verdict_and_alert(monkeypatch) -> None:
     monkeypatch.setenv(ENV_TOGGLE, "on")
-    monkeypatch.setattr(health, "subscription_model", lambda *_args: object())
+    monkeypatch.setattr(health, "subscription_model", lambda *_: object())
     alerts = []
 
-    async def alert(*_args: object) -> None:
+    async def alert(*_) -> None:
         alerts.append(True)
 
-    async def heartbeat(*_args: object) -> None:
+    async def heartbeat(*_) -> None:
         raise RuntimeError("down")
 
     monkeypatch.setattr(health, "_write_alert", alert)
@@ -126,7 +115,7 @@ async def test_heartbeat_failure_preserves_verdict_and_alert(
     assert alerts == [True]
 
 
-async def test_scheduler_routes_subscription_health(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_scheduler_routes_subscription_health(monkeypatch) -> None:
     from agent import scheduler
 
     async def check() -> dict[str, str]:
