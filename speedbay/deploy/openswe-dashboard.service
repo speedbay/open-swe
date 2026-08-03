@@ -1,0 +1,12 @@
+[Unit]
+Description=Open SWE dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+User=openswe
+ExecStart=caddy run --config /home/openswe/open-swe/speedbay/deploy/Caddyfile
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

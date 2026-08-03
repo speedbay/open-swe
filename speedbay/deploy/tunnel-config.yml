@@ -3,4 +3,6 @@ credentials-file: /home/openswe/.cloudflared/66d09a43-7dac-4001-9adb-b6df1806796
 ingress:
   - hostname: openswe.speedbay.com
     service: http://localhost:2024
+  - hostname: openswe-dash.speedbay.com
+    service: http://localhost:8080
   - service: http_status:404

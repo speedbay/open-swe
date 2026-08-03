@@ -51,5 +51,6 @@ def test_tunnel_config_routes_backend_then_returns_404() -> None:
     )
     assert config["ingress"] == [
         {"hostname": "openswe.speedbay.com", "service": "http://localhost:2024"},
+        {"hostname": "openswe-dash.speedbay.com", "service": "http://localhost:8080"},
         {"service": "http_status:404"},
     ]

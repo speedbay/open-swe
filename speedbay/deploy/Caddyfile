@@ -1,0 +1,9 @@
+:8080 {
+	root * /home/openswe/open-swe/ui/dist
+
+	route {
+		reverse_proxy /dashboard/api/* localhost:2024
+		try_files {path} /index.html
+		file_server
+	}
+}
