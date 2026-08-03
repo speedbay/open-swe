@@ -1,4 +1,4 @@
-"""Tests for the gate-breach approval dashboard API (OPE-10)."""
+"""Tests for the gate-breach approval dashboard API (OPE-10, OPE-75)."""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ def _pending_record(**overrides: object) -> dict:
         "approval_url": "https://dash/agents/t-1?gateApproval=fp-1",
         "requested_at": "2026-08-01T00:00:00+00:00",
         "notified": True,
-        "rounds": 3,
     }
     record.update(overrides)
     return record
@@ -67,7 +66,7 @@ async def test_list_gate_approvals_returns_records_for_owner(monkeypatch) -> Non
     assert approval["status"] == "pending"
     assert approval["issueId"] == "OPE-10"
     assert approval["failedRuleIds"] == ["atomicity"]
-    assert approval["rounds"] == 3
+    assert "rounds" not in approval  # OPE-75: no corrective-round presentation
     assert approval["diffStats"]["rawLoc"] == 400
 
 
@@ -132,6 +131,24 @@ async def test_reject_posts_linear_comment_and_dispatches_nothing(monkeypatch) -
     assert issue_id == "OPE-10"
     assert "rejected" in body and FP in body
     assert "https://dash/agents/t-1?gateApproval=fp-1" in body
+    # OPE-75: rejection directs a human to pi-forge planning rework/split.
+    assert "pi-forge" in body
+    assert "rework or split" in body
+
+
+def test_module_performs_no_linear_state_mutation() -> None:
+    """OPE-75 AC 3: neither decision path may mutate Linear issue state.
+
+    The forbidden seams (``update_issue``, ``linear_update_issue``, workflow-
+    state resolvers) must not be imported or referenced anywhere in the
+    gate-approval API module — a source-level sentinel, not a runtime stub,
+    because an unused import is already a violation.
+    """
+    import inspect
+
+    source = inspect.getsource(gate_approval_api)
+    for forbidden in ("update_issue", "linear_update_issue", "workflow_state", "WorkflowState"):
+        assert forbidden not in source, f"forbidden Linear state-mutation seam: {forbidden}"
 
 
 async def test_reject_requires_thread_owner(monkeypatch) -> None:

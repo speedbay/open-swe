@@ -1,9 +1,12 @@
-"""Tests for the PR-standards gate middleware (OPE-8).
+"""Tests for the PR-standards gate middleware (OPE-8, OPE-75).
 
 Unit tests drive the middleware through fake backends/requests (rule math is
-tested in OPE-14's test_rules.py); one docker-gated integration test
-seeds an oversized and a compliant change through the real docker backend and
-self-skips where docker or the sandbox image is unavailable.
+tested in OPE-14's test_rules.py). The first rule violation halts the run: the
+gate returns ``Command(update={"messages": [...]}, goto=END)`` and the
+``before_model`` backstop jumps to end — a compiled-agent regression proves no
+second model call runs. One docker-gated integration test seeds an oversized
+and a compliant change through the real docker backend and self-skips where
+docker or the sandbox image is unavailable.
 
 Run:  .venv/bin/python -m pytest tests/speedbay/test_pr_standards.py -x -q
 """
@@ -17,6 +20,8 @@ from typing import Any
 import attrs
 import pytest
 from langchain_core.messages import ToolMessage
+from langgraph.graph import END
+from langgraph.types import Command
 
 from agent.speedbay import pr_standards as fg
 from agent.speedbay.pr_standards import PRStandardsMiddleware
@@ -128,6 +133,16 @@ def _payload(result: Any) -> dict[str, Any]:
     return json.loads(str(result.content))
 
 
+def _halt_payload(result: Any) -> dict[str, Any]:
+    """Assert the OPE-75 halt shape: Command ending the graph with the block."""
+    assert isinstance(result, Command)
+    assert result.goto == END
+    (message,) = result.update["messages"]
+    assert isinstance(message, ToolMessage)
+    assert message.tool_call_id == "call-1"
+    return json.loads(str(message.content))
+
+
 # --- shell-fallback interception (sync + async, pr_creation_guard parity) ----
 
 
@@ -203,33 +218,37 @@ def test_blocked_pr_args_left_untouched(monkeypatch) -> None:
     never reaches the tool, so its args are irrelevant but must not be
     silently rewritten (evidence in the block message stays faithful)."""
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
+    _stub_gate_store(monkeypatch)
     request = _request()
-    _payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
+    _halt_payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
     assert "draft" not in request.tool_call["args"]
 
 
-def test_oversized_diff_blocked_with_cap_and_split_instruction(monkeypatch) -> None:
+def test_oversized_diff_halts_with_cap_and_split_instruction(monkeypatch) -> None:
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
-    _stub_durable_state(monkeypatch)
-    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler)))
+    _stub_gate_store(monkeypatch)
+    payload = _halt_payload(
+        _run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler))
+    )
     assert payload["code"] == "pr_standards_failed"
-    assert payload["recoverable_by_agent"] is True
+    assert payload["recoverable_by_agent"] is False
     assert "effective LOC 400 exceeds the Track-A cap of 300" in payload["atomicity"]["exceeded"][0]
     assert "Split the change" in payload["error"]
     assert payload["atomicity"]["raw_loc"] == 400
+    assert payload["gate_approval"]["status"] == "pending"
 
 
-def test_hygiene_violations_blocked_with_rule_names(monkeypatch) -> None:
+def test_hygiene_violations_halt_with_rule_names(monkeypatch) -> None:
     _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"))
-    _stub_durable_state(monkeypatch)
+    _stub_gate_store(monkeypatch)
     request = _request(title="update stuff", body=_body() + "\nMade by [Open SWE]\n")
-    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
+    payload = _halt_payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
     rules = {v["rule"] for v in payload["hygiene_violations"]}
     assert {"title-format", "ai-attribution"} <= rules
     assert "[title-format]" in payload["error"]
 
 
-def test_truncated_numstat_blocks_as_oversized(monkeypatch) -> None:
+def test_truncated_numstat_halts_as_oversized(monkeypatch) -> None:
     backend = FakeBackend(
         {
             "rev-parse": FakeResponse(output="f" * 40),
@@ -237,75 +256,139 @@ def test_truncated_numstat_blocks_as_oversized(monkeypatch) -> None:
         }
     )
     _wire(monkeypatch, backend)
-    _stub_durable_state(monkeypatch)
-    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler)))
+    _stub_gate_store(monkeypatch)
+    payload = _halt_payload(
+        _run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler))
+    )
     assert any("truncated" in reason for reason in payload["atomicity"]["exceeded"])
 
 
 def test_no_linear_issue_runs_attribution_check_only(monkeypatch) -> None:
     _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"), issue=None)
-    _stub_durable_state(monkeypatch)
+    _stub_gate_store(monkeypatch)
     # Bad title passes without an expected issue id...
     request = _request(title="update stuff")
     assert _run(PRStandardsMiddleware().awrap_tool_call(request, _pass_handler)) == "pr-opened"
-    # ...but AI attribution still blocks.
+    # ...but AI attribution still halts.
     request = _request(title="update stuff", body="Made by [Open SWE]")
-    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
+    payload = _halt_payload(_run(PRStandardsMiddleware().awrap_tool_call(request, _fail_handler)))
     assert [v["rule"] for v in payload["hygiene_violations"]] == ["ai-attribution"]
 
 
-def _stub_durable_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No durable store in these tests: the gate falls back to advice-only.
+def _stub_gate_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Working durable-store stubs: a fresh pending record, nothing approved.
 
-    The fallback keeps the counter in-process for the active run and logs at
-    error level — OPE-10 semantics without a LangGraph thread. Escalation
-    still fires (rounds == MAX), only the approval pause is degraded.
+    Keeps these unit tests focused on rule verdicts and the halt shape; full
+    store behavior (record-before-notify, exemption consumption, rejection)
+    is covered in test_gate_approval.py.
     """
+
+    async def ensure(thread_id: str, **kwargs: Any) -> tuple[dict[str, Any], bool]:
+        return {"status": "pending", **kwargs}, True
+
+    async def status(thread_id: str, fingerprint: str) -> str:
+        return "pending"
+
+    async def consume(thread_id: str, fingerprint: str) -> bool:
+        return False
+
+    async def noop(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def comment(issue_id: str, body: str, parent_id: str | None = None) -> bool:
+        return True
+
+    monkeypatch.setattr(fg, "ensure_gate_approval_pending", ensure)
+    monkeypatch.setattr(fg, "gate_approval_status", status)
+    monkeypatch.setattr(fg, "consume_gate_approval", consume)
+    monkeypatch.setattr(fg, "mark_gate_approval_notified", noop)
+    monkeypatch.setattr(fg, "comment_on_linear_issue", comment)
+
+
+def test_store_fault_after_rule_verdict_fails_closed_and_ends_run(monkeypatch, caplog) -> None:
+    """OPE-75: a durable-store fault after a rule verdict must not permit PR
+    creation or another corrective turn — the run ends with explicit
+    infrastructure evidence."""
+    _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
 
     async def fail(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("no durable store")
 
-    monkeypatch.setattr(fg, "bump_gate_rounds", fail)
     monkeypatch.setattr(fg, "ensure_gate_approval_pending", fail)
-    monkeypatch.setattr(fg, "consume_gate_approval", fail)
-    monkeypatch.setattr(fg, "gate_approval_status", fail)
-
-
-def test_corrective_rounds_bounded_then_escalates(monkeypatch, caplog) -> None:
-    """Store outage: rounds still count, but the run is never wedged.
-
-    Without a durable pending record there is no fingerprint a human could
-    approve, so the fallback path must stay agent-recoverable (fail-open for
-    infrastructure faults) while still telling the agent to surface it.
-    """
-    _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
-    _stub_durable_state(monkeypatch)
-    middleware = PRStandardsMiddleware()
-    for expected_round in (1, 2):
-        payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
-        assert payload["corrective_round"] == expected_round
-        assert payload["escalation_required"] is False
     with caplog.at_level("ERROR"):
-        payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
-    assert payload["corrective_round"] == 3
-    assert payload["escalation_required"] is False
-    assert payload["recoverable_by_agent"] is True
-    assert "surface this gate failure to a human" in payload["error"]
+        payload = _halt_payload(
+            _run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler))
+        )
+    assert payload["code"] == "pr_standards_store_error"
+    assert payload["recoverable_by_agent"] is False
+    assert "gate-approval state store failed" in payload["error"]
+    assert "run has ended without opening a PR" in payload["error"]
     assert "durable approval state error" in caplog.text
 
 
-def test_passing_gate_resets_the_round_counter(monkeypatch) -> None:
-    middleware = PRStandardsMiddleware()
-    _stub_durable_state(monkeypatch)
+def test_violating_open_pull_request_ends_run_without_second_model_call(monkeypatch) -> None:
+    """Compiled-agent regression (OPE-75 AC 1): a violating open_pull_request
+    never reaches its handler and the graph ends without a second model call."""
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.tools import tool
+
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
-    _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
-    assert middleware._fallback_rounds.get("t-1") == 1
-    _wire(monkeypatch, _numstat("1\t0\tagent/api.py\n"))
-    assert _run(middleware.awrap_tool_call(_request(), _pass_handler)) == "pr-opened"
-    assert "t-1" not in middleware._fallback_rounds  # the pass cleared it
-    _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
-    payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
-    assert payload["corrective_round"] == 1
+    _stub_gate_store(monkeypatch)
+
+    model_calls = {"count": 0}
+
+    class FakeToolCallingModel(GenericFakeChatModel):
+        def bind_tools(self, tools: Any, **kwargs: Any) -> FakeToolCallingModel:
+            return self
+
+        def _generate(self, *args: Any, **kwargs: Any) -> Any:
+            model_calls["count"] += 1
+            return super()._generate(*args, **kwargs)
+
+    handled: list[bool] = []
+
+    @tool
+    async def open_pull_request(title: str, body: str, head: str, base: str) -> str:
+        """Open a pull request."""
+        handled.append(True)
+        return "opened"
+
+    messages = iter(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "open_pull_request",
+                        "args": {
+                            "title": f"{ISSUE}: add the gate",
+                            "body": _body(),
+                            "head": BRANCH,
+                            "base": "main",
+                        },
+                        "id": "call-1",
+                    }
+                ],
+            ),
+            AIMessage(content="a second model turn must never run"),
+        ]
+    )
+    agent = create_agent(
+        model=FakeToolCallingModel(messages=messages),
+        tools=[open_pull_request],
+        middleware=[PRStandardsMiddleware()],
+    )
+    result = _run(agent.ainvoke({"messages": [("user", "open the PR")]}))
+
+    assert model_calls["count"] == 1  # the tool-calling turn only
+    assert handled == []  # the PR tool handler was never called
+    last = result["messages"][-1]
+    assert isinstance(last, ToolMessage)
+    payload = json.loads(str(last.content))
+    assert payload["code"] == "pr_standards_failed"
+    assert payload["recoverable_by_agent"] is False
 
 
 def test_fails_open_when_diff_unavailable(monkeypatch, caplog) -> None:
@@ -401,8 +484,9 @@ def test_integration_oversized_blocks_and_compliant_passes(monkeypatch) -> None:
             },
         )
 
+        _stub_gate_store(monkeypatch)
         blocked = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler))
-        assert _payload(blocked)["code"] == "pr_standards_failed"
+        assert _halt_payload(blocked)["code"] == "pr_standards_failed"
 
         _run(
             sandbox.aexecute(

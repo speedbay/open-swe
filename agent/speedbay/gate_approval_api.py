@@ -127,8 +127,9 @@ async def _post_rejection_comment(record: dict[str, Any], *, actor: str) -> None
     approval_url = record.get("approval_url")
     body = (
         f"PR-standards gate breach **rejected** by {actor}: the run stays ended and "
-        "no exemption was granted. Split the change into smaller PRs or fix the "
-        "hygiene violations and start a new run.\n\n"
+        "no exemption was granted. A human should rework or split this ticket with "
+        "the pi-forge planning skills (`verify-linear-issue`, "
+        "`draft-linear-issues-from-prd`) before starting a new run.\n\n"
         f"Fingerprint: `{record.get('fingerprint')}`\n"
         + (
             f"Approval record: {approval_url}\n"

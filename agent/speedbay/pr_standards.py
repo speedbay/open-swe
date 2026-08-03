@@ -10,18 +10,21 @@ shell-fallback check (upstream's ``is_pr_creation_fallback_command`` — ``gh
 pr create`` / ``gh api`` POST / ``curl``, incl. ``||``, pipe, and nested-shell
 forms) runs on both paths so nothing routes around the gate.
 
-Fail-open for infrastructure problems only (no thread id, unreachable
-sandbox, undiffable base), per quality_gates; rule verdicts always block, and
-a truncated numstat blocks as oversized (missing rows would undercount).
-Corrective rounds are bounded: the round counter is durable (per-fingerprint
-record in thread metadata, ``gate_approval.bump_gate_rounds`` — survives
-backend restarts), and after ``MAX_CORRECTIVE_ROUNDS`` blocks on one diff the
-run pauses for human approval (OPE-10): the middleware records a durable
-pending approval **before** posting the Linear escalation comment itself
-(post-once via ``notified``, error-level log on failure), then returns a
-blocking ToolMessage (``recoverable_by_agent: false``). A dashboard approve
-grants a one-time, fingerprint-bound exemption; ``consume_gate_approval``
-spends it on the next gate attempt, and a new commit re-gates.
+Fail-open for infrastructure problems only **before a trustworthy rule
+verdict exists** (no thread id, unreachable sandbox, undiffable base), per
+quality_gates; rule verdicts always block, and a truncated numstat blocks as
+oversized (missing rows would undercount). The **first** atomicity or
+commit-hygiene violation is an immediate human decision point (OPE-75 — no
+corrective-round budget): the middleware records a durable pending approval
+**before** posting the Linear breach comment itself (post-once via
+``notified``, error-level log on failure), then ends the active run — the
+blocking ToolMessage (``recoverable_by_agent: false``) is returned through
+``Command(update={"messages": [...]}, goto=END)`` and the ``before_model``
+hook jumps the loop to end, so no subsequent model turn runs. A durable-store
+fault **after** a rule verdict also fails closed and ends the run with
+explicit infrastructure evidence. A dashboard approve grants a one-time,
+fingerprint-bound exemption; ``consume_gate_approval`` spends it on the next
+gate attempt, and a new commit re-gates. A reject leaves the run ended.
 """
 
 from __future__ import annotations
@@ -33,11 +36,13 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 import attrs
-from langchain.agents.middleware.types import AgentMiddleware, AgentState
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, hook_config
 from langchain_core.messages import ToolMessage
 from langchain_core.messages.tool import ToolCall
 from langgraph.config import get_config
+from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
+from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from ..middleware.pr_creation_guard import is_pr_creation_fallback_command
@@ -46,12 +51,11 @@ from ..utils.sandbox_state import get_sandbox_backend
 
 # Tunable settings live in config.py (OPE-31); both gates share the sandbox
 # workspace root and diff timeout through it.
-from .config import DIFF_TIMEOUT_SECONDS, MAX_CORRECTIVE_ROUNDS, WORKSPACE
+from .config import DIFF_TIMEOUT_SECONDS, WORKSPACE
 from .gate_approval import (
     GATE_APPROVAL_APPROVED,
     GATE_APPROVAL_PENDING,
     GATE_APPROVAL_REJECTED,
-    bump_gate_rounds,
     consume_gate_approval,
     dashboard_gate_approval_url,
     ensure_gate_approval_pending,
@@ -67,6 +71,10 @@ from .rules.hygiene import check_attribution, check_hygiene
 logger = logging.getLogger(__name__)
 
 _EVIDENCE_TAIL_CHARS = 2000
+
+# Block-message codes that end the active run. The shell-fallback block is
+# deliberately absent: the agent should retry via open_pull_request instead.
+_HALT_CODES = frozenset({"pr_standards_failed", "pr_standards_store_error"})
 
 _FALLBACK_ERROR = (
     "New pull requests must be opened with the open_pull_request tool so the "
@@ -167,17 +175,17 @@ def _block_message(
     advice: list[str],
     verdict: Any,
     violations: tuple[Any, ...],
-    rounds: int,
-    escalate: bool,
+    code: str = "pr_standards_failed",
     fingerprint: str | None = None,
     approval_url: str | None = None,
     approval_status: str | None = None,
 ) -> ToolMessage:
+    """Non-recoverable gate-block ToolMessage: every rule-verdict block ends the run."""
     content: dict[str, Any] = {
         "status": "error",
         "error_type": "PRStandardsFailed",
-        "code": "pr_standards_failed",
-        "recoverable_by_agent": not escalate,
+        "code": code,
+        "recoverable_by_agent": False,
         "error": " ".join(advice),
         "atomicity": {
             "passed": verdict.passed,
@@ -187,8 +195,6 @@ def _block_message(
             "exceeded": list(verdict.exceeded),
         },
         "hygiene_violations": [{"rule": v.rule, "message": v.message} for v in violations],
-        "corrective_round": rounds,
-        "escalation_required": escalate,
     }
     if fingerprint is not None:
         content["gate_approval"] = {
@@ -199,6 +205,30 @@ def _block_message(
     return ToolMessage(
         content=json.dumps(content), tool_call_id=_tool_call_id(request), status="error"
     )
+
+
+def _halt(message: ToolMessage) -> Command:
+    """End the active run after recording ``message`` as the tool result.
+
+    The ``Command`` carries the matching ToolMessage (required by
+    ``ToolNode._validate_tool_command`` for a current-graph update) and
+    ``goto=END``. The agent loop's tools→model conditional edge can still
+    route past a tool-level goto, so ``before_model`` (below) is the
+    enforcement backstop: it jumps to end whenever the last message is one
+    of these halt blocks — no subsequent model turn runs either way.
+    """
+    return Command(update={"messages": [message]}, goto=END)
+
+
+def _is_halt_message(message: Any) -> bool:
+    """True when ``message`` is a PR-standards halt block (see ``_HALT_CODES``)."""
+    if not isinstance(message, ToolMessage):
+        return False
+    try:
+        content = json.loads(str(message.content))
+    except (TypeError, ValueError):
+        return False
+    return isinstance(content, dict) and content.get("code") in _HALT_CODES
 
 
 def _gate_escalation_linear_comment(
@@ -219,8 +249,8 @@ def _gate_escalation_linear_comment(
     lines = [
         heading,
         "",
-        "The agent could not satisfy the PR gates within "
-        f"{MAX_CORRECTIVE_ROUNDS} corrective rounds and the run is paused.",
+        "The agent's pull request failed the PR-standards gate and the run has "
+        "ended pending a human decision.",
         "",
         f"- Raw LOC: {stats.get('raw_loc', 0)} · effective LOC: "
         f"{stats.get('effective_loc', 0)} · production files: "
@@ -237,7 +267,8 @@ def _gate_escalation_linear_comment(
         [
             "",
             "Approving grants a one-time exemption for exactly this diff — any new "
-            "commit re-gates. Rejecting ends the escalation; split the change instead.",
+            "commit re-gates. Rejecting keeps the run ended; rework or split the "
+            "ticket with the pi-forge planning skills.",
         ]
     )
     return "\n".join(lines)
@@ -301,13 +332,6 @@ class PRStandardsMiddleware(AgentMiddleware):
 
     state_schema = AgentState
 
-    def __init__(self) -> None:
-        super().__init__()
-        # In-process rounds fallback, used only when the durable thread-metadata
-        # store faults (logged at error): keeps corrective rounds bounded for the
-        # active run instead of jumping straight to escalation advice.
-        self._fallback_rounds: dict[str, int] = {}
-
     def _fallback_block(self, request: ToolCallRequest) -> ToolMessage | None:
         if _tool_name(request) != "execute":
             return None
@@ -351,7 +375,27 @@ class PRStandardsMiddleware(AgentMiddleware):
             return gate_block
         return await handler(_force_ready_for_review(request))
 
-    async def _gate_open_pull_request(self, request: ToolCallRequest) -> ToolMessage | None:
+    @hook_config(can_jump_to=["end"])
+    def before_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:  # noqa: ARG002
+        """End the run when the last message is a PR-standards halt block.
+
+        The enforcement backstop for ``_halt``: a tool-level ``goto=END`` does
+        not override the agent loop's tools→model conditional edge, so this
+        hook (the ``sandbox_circuit_breaker`` precedent) jumps to end before
+        any subsequent model turn. An approval follow-up appends a new human
+        message, so resumed threads never match here.
+        """
+        messages = state.get("messages", [])
+        if messages and _is_halt_message(messages[-1]):
+            return {"jump_to": "end"}
+        return None
+
+    @hook_config(can_jump_to=["end"])
+    async def abefore_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        """Async mirror of ``before_model`` (the agent runs on the async path)."""
+        return self.before_model(state, runtime)
+
+    async def _gate_open_pull_request(self, request: ToolCallRequest) -> Command | None:
         try:
             args = _tool_args(request)
             raw_title, raw_body = args.get("title"), args.get("body")
@@ -415,8 +459,6 @@ class PRStandardsMiddleware(AgentMiddleware):
             return None
 
         if verdict.passed and not violations:
-            if isinstance(thread_id, str) and thread_id:
-                self._fallback_rounds.pop(thread_id, None)
             return None
 
         failed_rule_ids = ["atomicity"] * (not verdict.passed) + [v.rule for v in violations]
@@ -467,11 +509,14 @@ class PRStandardsMiddleware(AgentMiddleware):
         metadata_digest: str,
         evidence: str,
         advice: list[str],
-    ) -> ToolMessage | None:
-        """Durable round counter + OPE-10 approval pause behind one fail-open seam.
+    ) -> Command | None:
+        """First-violation halt: durable pending record, post-once notify, run end.
 
         Returns None only when a one-time approved exemption is consumed — the
-        caller then treats the gate as passed for this exact diff.
+        caller then treats the gate as passed for this exact diff. Every other
+        outcome (fresh breach, still-pending breach, rejection, durable-store
+        fault) ends the active run via ``_halt``; there is no corrective-round
+        budget (OPE-75).
         """
         try:
             # The SHAs arrive from _numstat, which resolved them before
@@ -504,20 +549,21 @@ class PRStandardsMiddleware(AgentMiddleware):
             # rejected fingerprint was never rewritten to pending.
             status = await gate_approval_status(thread_id, fingerprint)
             if status == GATE_APPROVAL_REJECTED:
-                return _block_message(
-                    request,
-                    advice=[
-                        "A human rejected this gate breach. Split the change into "
-                        "smaller PRs or fix the violations and open a new run; do "
-                        "not retry open_pull_request with this diff."
-                    ],
-                    verdict=verdict,
-                    violations=violations,
-                    rounds=int(record.get("rounds") or 0),
-                    escalate=True,
-                    fingerprint=fingerprint,
-                    approval_url=approval_url,
-                    approval_status=GATE_APPROVAL_REJECTED,
+                return _halt(
+                    _block_message(
+                        request,
+                        advice=[
+                            "A human rejected this gate breach and the run has ended. "
+                            "A human must rework or split the ticket with the "
+                            "pi-forge planning skills; do not retry "
+                            "open_pull_request with this diff."
+                        ],
+                        verdict=verdict,
+                        violations=violations,
+                        fingerprint=fingerprint,
+                        approval_url=approval_url,
+                        approval_status=GATE_APPROVAL_REJECTED,
+                    )
                 )
             if status == GATE_APPROVAL_APPROVED and await consume_gate_approval(
                 thread_id, fingerprint
@@ -529,67 +575,57 @@ class PRStandardsMiddleware(AgentMiddleware):
                     fingerprint,
                 )
                 return None  # exemption consumed: gate passes this diff once
-            rounds = await bump_gate_rounds(thread_id, fingerprint)
-            escalate = rounds >= MAX_CORRECTIVE_ROUNDS
-            if escalate:
-                # The durable record exists before any notification attempt.
-                posted = await _notify_gate_escalation(
-                    thread_id, fingerprint, record, created=created
-                )
-                surfacing = (
-                    "a Linear comment has been posted by the gate itself, no "
-                    "further surfacing is needed."
-                    if posted
-                    else "the gate could NOT post its Linear comment (see backend "
-                    "logs); the breach is visible in the dashboard pending-approvals "
-                    "list — surface this gate failure to a human via the source "
-                    "channel."
-                )
-                advice.append(
-                    f"This was corrective round {rounds} of {MAX_CORRECTIVE_ROUNDS}: "
-                    "the run is blocked pending human approval"
-                    + (f" at {approval_url}" if approval_url else "")
-                    + f". Do not retry open_pull_request until a human approves the "
-                    f"gate breach — {surfacing}"
-                )
+            # First violation — the durable record exists before any
+            # notification attempt; then the run ends for a human decision.
+            posted = await _notify_gate_escalation(thread_id, fingerprint, record, created=created)
+            surfacing = (
+                "a Linear comment has been posted by the gate itself, no "
+                "further surfacing is needed."
+                if posted
+                else "the gate could NOT post its Linear comment (see backend "
+                "logs); the breach is visible in the dashboard pending-approvals "
+                "list — surface this gate failure to a human via the source "
+                "channel."
+            )
+            advice.append(
+                "The run has ended pending human approval"
+                + (f" at {approval_url}" if approval_url else "")
+                + f". Do not retry open_pull_request — {surfacing}"
+            )
             logger.info(
-                "PR standards gate: blocking open_pull_request (round %d) — atomicity=%s hygiene=%s",
-                rounds,
+                "PR standards gate: halting open_pull_request — atomicity=%s hygiene=%s",
                 verdict.exceeded,
                 [v.rule for v in violations],
             )
-            return _block_message(
-                request,
-                advice=advice,
-                verdict=verdict,
-                violations=violations,
-                rounds=rounds,
-                escalate=escalate,
-                fingerprint=fingerprint,
-                approval_url=approval_url if escalate else None,
-                approval_status=GATE_APPROVAL_PENDING if escalate else None,
+            return _halt(
+                _block_message(
+                    request,
+                    advice=advice,
+                    verdict=verdict,
+                    violations=violations,
+                    fingerprint=fingerprint,
+                    approval_url=approval_url,
+                    approval_status=GATE_APPROVAL_PENDING,
+                )
             )
         except Exception:
-            # A fault in the durable-state layer must not wedge PR creation —
-            # log loudly and fall back to the advice-only corrective message.
-            logger.exception("PR standards gate: durable approval state error")
-            rounds = self._fallback_rounds.get(thread_id, 0) + 1
-            self._fallback_rounds[thread_id] = rounds
-            fallback_advice = list(advice)
-            if rounds >= MAX_CORRECTIVE_ROUNDS:
-                fallback_advice.append(
-                    "The durable gate-approval state store failed (see backend "
-                    "logs): surface this gate failure to a human for approval."
+            # A durable-store fault after a rule verdict fails CLOSED (OPE-75):
+            # permitting PR creation or another corrective turn on a store
+            # outage would bypass the human decision point entirely.
+            logger.exception("PR standards gate: durable approval state error — run ends")
+            failed_advice = list(advice)
+            failed_advice.append(
+                "The durable gate-approval state store failed (see backend logs "
+                "for the stack trace), so no dashboard approval record could be "
+                "created. The run has ended without opening a PR; a human must "
+                "fix the approval store and start a new run."
+            )
+            return _halt(
+                _block_message(
+                    request,
+                    advice=failed_advice,
+                    verdict=verdict,
+                    violations=violations,
+                    code="pr_standards_store_error",
                 )
-            # Never escalate on this path: without a durable pending record
-            # there is no fingerprint for a human to approve, so flipping
-            # recoverable_by_agent to False would wedge the run permanently —
-            # a store outage stays agent-recoverable per the fail-open policy.
-            return _block_message(
-                request,
-                advice=fallback_advice,
-                verdict=verdict,
-                violations=violations,
-                rounds=rounds,
-                escalate=False,
             )
