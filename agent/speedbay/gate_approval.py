@@ -9,9 +9,11 @@ Unlike workflow approvals (consumed once per retry), a gate approval is a
 **one-time** exemption: ``consume_gate_approval`` flips an ``approved``
 record to ``exemption_consumed`` so the same fingerprint never passes
 twice, and any new commit (changed head SHA) changes the fingerprint and
-re-gates. There is no corrective-round budget (OPE-75): the first
-violation records the pending approval and ends the run. Legacy stored
-``rounds`` keys are ignored.
+re-gates. There is no corrective-round budget (OPE-75): the first HARD
+(atomicity) violation records the pending approval and ends the run.
+REMEDIABLE hygiene-only violations are corrected in-run by the agent and
+reach this store only when their remediation budget is exhausted (see
+``pr_standards.py``). Legacy stored ``rounds`` keys are ignored.
 """
 
 from __future__ import annotations

@@ -19,6 +19,7 @@ from typing import Any, cast
 
 import attrs
 import pytest
+from langchain_core.messages import ToolMessage
 from langgraph.graph import END
 from langgraph.types import Command
 
@@ -151,11 +152,11 @@ REQUEST_BODY = (
 REQUEST_BRANCH = "ope-10-gate-breach"
 
 
-def _request(body: str = REQUEST_BODY) -> Any:
+def _request(body: str = REQUEST_BODY, title: str = REQUEST_TITLE) -> Any:
     args = {
         "base": "main",
         "head": REQUEST_BRANCH,
-        "title": REQUEST_TITLE,
+        "title": title,
         "body": body,
     }
 
@@ -185,6 +186,12 @@ def _payload(result: Any) -> dict[str, Any]:
     assert isinstance(result.update, dict)
     (message,) = result.update["messages"]
     return json.loads(str(message.content))
+
+
+def _corrective_payload(result: Any) -> dict[str, Any]:
+    """Unwrap a hygiene corrective block: a plain ToolMessage, run continues."""
+    assert isinstance(result, ToolMessage)
+    return json.loads(str(result.content))
 
 
 DIGEST = ga.pr_metadata_digest(REQUEST_TITLE, REQUEST_BODY, REQUEST_BRANCH)
@@ -652,6 +659,65 @@ def test_approval_is_content_bound_not_just_diff_bound(monkeypatch) -> None:
     assert record["status"] == ga.GATE_APPROVAL_APPROVED  # untouched
     # The reviewed content itself still passes on its one-time exemption.
     assert _run(middleware.awrap_tool_call(_request(), _pass_handler)) == "pr-opened"
+
+
+def test_approved_exemption_resets_hygiene_budget(monkeypatch) -> None:
+    """A consumed approval wipes the exhausted hygiene budget: the next
+    hygiene defect gets fresh remediation attempts, not instant escalation
+    (PR #54 review)."""
+    client, linear = FakeLangGraphClient(), FakeLinear()
+    _wire_store(monkeypatch, client)
+    _wire_linear(monkeypatch, linear)
+    _wire_gate(monkeypatch, _gate_backend("1\t0\tagent/api.py\n"))  # atomicity passes
+
+    middleware = PRStandardsMiddleware()
+    bad = _request(title="update stuff")  # hygiene-only failure
+    for _ in range(2):  # two corrective retries…
+        corrective = _corrective_payload(_run(middleware.awrap_tool_call(bad, _fail_handler)))
+        assert corrective["code"] == "pr_standards_hygiene_retry"
+    payload = _payload(_run(middleware.awrap_tool_call(bad, _fail_handler)))  # …then escalation
+    assert payload["disposition"] == "escalated_after_remediation_budget"
+    fingerprint = payload["gate_approval"]["fingerprint"]
+
+    _run(ga.decide_gate_approval("t-1", fingerprint, approved=True, actor="owner"))
+    # Option A: approve opens the PR as-is on the one-time exemption.
+    assert _run(middleware.awrap_tool_call(bad, _pass_handler)) == "pr-opened"
+
+    # A NEW hygiene defect starts with a fresh budget — corrective retry,
+    # never an instant escalation off the stale exhausted counter.
+    other = _corrective_payload(
+        _run(middleware.awrap_tool_call(_request(title="also wrong"), _fail_handler))
+    )
+    assert other["code"] == "pr_standards_hygiene_retry"
+
+
+def test_lost_consume_race_reports_consumed_not_pending(monkeypatch) -> None:
+    """An attempt that loses the one-time-exemption consume race must halt
+    with the real 'exemption_consumed' state, not a pending approval that
+    can never arrive (PR #54 review)."""
+    client, linear = FakeLangGraphClient(), FakeLinear()
+    _wire_store(monkeypatch, client)
+    _wire_linear(monkeypatch, linear)
+    _wire_gate(monkeypatch, _gate_backend())
+
+    middleware = PRStandardsMiddleware()
+    _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))  # pending halt
+    _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner"))
+
+    real_consume = ga.consume_gate_approval
+
+    async def racing_consume(thread_id: str, fingerprint: str) -> bool:
+        # A concurrent attempt wins the race…
+        assert await real_consume(thread_id, fingerprint) is True
+        # …so this attempt's consume loses.
+        return await real_consume(thread_id, fingerprint)
+
+    monkeypatch.setattr(fg, "consume_gate_approval", racing_consume)
+    payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+    assert payload["gate_approval"]["status"] == ga.GATE_APPROVAL_CONSUMED
+    assert "already consumed" in payload["error"]
+    assert "pending human approval" not in payload["error"]
+    assert payload["recoverable_by_agent"] is False
 
 
 def test_rejection_racing_the_pending_write_still_blocks_terminally(monkeypatch) -> None:

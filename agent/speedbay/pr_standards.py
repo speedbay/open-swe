@@ -67,6 +67,7 @@ from ..utils.sandbox_state import get_sandbox_backend
 from .config import DIFF_TIMEOUT_SECONDS, HYGIENE_REMEDIATION_ATTEMPTS, WORKSPACE
 from .gate_approval import (
     GATE_APPROVAL_APPROVED,
+    GATE_APPROVAL_CONSUMED,
     GATE_APPROVAL_PENDING,
     GATE_APPROVAL_REJECTED,
     consume_gate_approval,
@@ -660,16 +661,43 @@ class PRStandardsMiddleware(AgentMiddleware):
                         approval_status=GATE_APPROVAL_REJECTED,
                     )
                 )
-            if status == GATE_APPROVAL_APPROVED and await consume_gate_approval(
-                thread_id, fingerprint
-            ):
-                logger.info(
-                    "PR standards gate: passing thread %s on a one-time approved "
-                    "exemption (fingerprint %s)",
-                    thread_id,
-                    fingerprint,
-                )
-                return None  # exemption consumed: gate passes this diff once
+            if status == GATE_APPROVAL_APPROVED:
+                if await consume_gate_approval(thread_id, fingerprint):
+                    # The human decision supersedes earlier failed attempts:
+                    # an exhausted hygiene budget must not leak into the next
+                    # remediable defect on this thread (PR #54 review).
+                    self._hygiene_failures.pop(thread_id, None)
+                    logger.info(
+                        "PR standards gate: passing thread %s on a one-time approved "
+                        "exemption (fingerprint %s)",
+                        thread_id,
+                        fingerprint,
+                    )
+                    return None  # exemption consumed: gate passes this diff once
+                # Lost the consume race: a concurrent attempt spent the
+                # exemption between the status read and the consume. Re-read
+                # and report the real state instead of claiming a pending
+                # approval that does not exist (PR #54 review).
+                status = await gate_approval_status(thread_id, fingerprint)
+                if status == GATE_APPROVAL_CONSUMED:
+                    return _halt(
+                        _block_message(
+                            request,
+                            advice=[
+                                "The one-time exemption for this exact diff was "
+                                "already consumed by a concurrent attempt, so no "
+                                "pending approval exists and the run has ended. A "
+                                "new non-compliant attempt would open a fresh "
+                                "pending approval."
+                            ],
+                            verdict=verdict,
+                            findings=findings,
+                            disposition=disposition,
+                            fingerprint=fingerprint,
+                            approval_url=approval_url,
+                            approval_status=GATE_APPROVAL_CONSUMED,
+                        )
+                    )
             # First violation — the durable record exists before any
             # notification attempt; then the run ends for a human decision.
             posted = await _notify_gate_escalation(thread_id, fingerprint, record, created=created)

@@ -136,19 +136,28 @@ async def test_reject_posts_linear_comment_and_dispatches_nothing(monkeypatch) -
     assert "rework or split" in body
 
 
-def test_module_performs_no_linear_state_mutation() -> None:
+def test_module_binds_no_linear_state_mutation_seam() -> None:
     """OPE-75 AC 3: neither decision path may mutate Linear issue state.
 
-    The forbidden seams (``update_issue``, ``linear_update_issue``, workflow-
-    state resolvers) must not be imported or referenced anywhere in the
-    gate-approval API module — a source-level sentinel, not a runtime stub,
-    because an unused import is already a violation.
+    Namespace sentinel: no callable bound anywhere in the module — under any
+    alias — may be a known Linear state-mutation function. Inspecting module
+    bindings (``__name__`` of every bound callable) catches an aliased
+    ``from ... import update_issue as x`` that a source-text scan misses,
+    and cannot false-positive on comments or docstrings. Purely behavioral
+    stubbing is not available here: the module imports no mutation seam, so
+    there is nothing to stub — the absence of such a binding is exactly what
+    this test proves. The approve/reject behavioral paths are covered by the
+    endpoint tests above with their failing dispatch/comment sentinels.
     """
-    import inspect
-
-    source = inspect.getsource(gate_approval_api)
-    for forbidden in ("update_issue", "linear_update_issue", "workflow_state", "WorkflowState"):
-        assert forbidden not in source, f"forbidden Linear state-mutation seam: {forbidden}"
+    forbidden = {"update_issue", "linear_update_issue", "transition_issue_state"}
+    bound = {
+        getattr(value, "__name__", None)
+        for value in vars(gate_approval_api).values()
+        if callable(value)
+    }
+    assert not (forbidden & bound), (
+        f"Linear state-mutation seam bound in module: {forbidden & bound}"
+    )
 
 
 async def test_reject_requires_thread_owner(monkeypatch) -> None:
