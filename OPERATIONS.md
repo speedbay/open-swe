@@ -313,13 +313,15 @@ with `sudo systemctl enable --now openswe-prune.timer`. Check its status with
 ### On the Azure host (systemd)
 
 Install the deployment units as symlinks so a checkout update changes the source files in place,
-then enable and start both processes:
+then enable and start both processes and the prune timer:
 
 ```bash
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-backend.service /etc/systemd/system/openswe-backend.service
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-tunnel.service /etc/systemd/system/openswe-tunnel.service
+sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-prune.service /etc/systemd/system/openswe-prune.service
+sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-prune.timer /etc/systemd/system/openswe-prune.timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now openswe-backend.service openswe-tunnel.service
+sudo systemctl enable --now openswe-backend.service openswe-tunnel.service openswe-prune.timer
 ```
 
 Use `systemctl status openswe-backend.service openswe-tunnel.service` for current state and
