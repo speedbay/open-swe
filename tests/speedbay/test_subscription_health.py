@@ -1,7 +1,5 @@
 """Tests for nightly subscription OAuth health monitoring (OPE-68)."""
 
-from __future__ import annotations
-
 from typing import Any
 
 import pytest
@@ -17,136 +15,96 @@ def _model(name: str) -> object:
     return type(name, (), {"ainvoke": ainvoke})()
 
 
-@pytest.fixture
-def linear(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
+def _graphql(existing: bool = True) -> tuple[list[tuple[str, dict]], Any]:
     calls = []
 
-    async def graphql(query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def graphql(query: str, variables: dict | None = None) -> dict:
         variables = variables or {}
         calls.append((query, variables))
         if "SubscriptionHealthIssue(" in query:
             title = variables["filter"]["title"]["eq"]
-            return {"issues": {"nodes": [{"id": f"{title}-id"}]}}
-        if "SubscriptionHealthCommentCreate" in query:
+            return {"issues": {"nodes": [{"id": title}] if existing else []}}
+        if "SubscriptionHealthTeam" in query:
+            return {"teams": {"nodes": [{"id": "ope", "states": {"nodes": [{"id": "backlog"}]}}]}}
+        if "SubscriptionHealthSubscriber" in query:
+            return {"users": {"nodes": [{"id": "cbass"}]}}
+        if "IssueCreate" in query:
+            return {"issueCreate": {"success": True, "issue": {"id": "new"}}}
+        if "CommentCreate" in query:
             return {"commentCreate": {"success": True}}
         raise AssertionError(query)
 
-    monkeypatch.setattr(health, "_graphql_request", graphql)
-    return calls
+    return calls, graphql
 
 
 def _comments(calls: list[tuple[str, dict]]) -> list[dict]:
     return [variables for query, variables in calls if "CommentCreate" in query]
 
 
-async def test_disabled_skips_models_and_posts_heartbeat(
-    monkeypatch: pytest.MonkeyPatch, linear: list[tuple[str, dict]]
+@pytest.mark.parametrize("enabled,status", [(False, "disabled"), (True, "healthy")])
+async def test_every_outcome_posts_heartbeat(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool, status: str
 ) -> None:
-    monkeypatch.delenv(ENV_TOGGLE, raising=False)
-    monkeypatch.setattr(
-        health, "subscription_model", lambda *_args: pytest.fail("must not construct")
-    )
-    assert await health.check_subscription_auth() == {"status": "disabled"}
-    assert len(_comments(linear)) == 1
-    assert "disabled" in _comments(linear)[0]["body"]
+    calls, graphql = _graphql()
+    monkeypatch.setattr(health, "_graphql_request", graphql)
+    if enabled:
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setattr(
+            health,
+            "subscription_model",
+            lambda model_id, _kwargs: _model(health._PROVIDER_MODELS[model_id.split(":")[0]][1]),
+        )
+    else:
+        monkeypatch.delenv(ENV_TOGGLE, raising=False)
+        monkeypatch.setattr(
+            health, "subscription_model", lambda *_args: pytest.fail("must not construct")
+        )
+    result = await health.check_subscription_auth()
+    assert result["status"] == status
+    assert len(_comments(calls)) == 1
+    assert _comments(calls)[0]["issueId"] == health.HEARTBEAT_TITLE
 
 
-async def test_wrong_class_alerts_and_posts_heartbeat(
-    monkeypatch: pytest.MonkeyPatch, linear: list[tuple[str, dict]]
-) -> None:
+async def test_wrong_class_alerts_and_posts_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, graphql = _graphql()
+    monkeypatch.setattr(health, "_graphql_request", graphql)
     monkeypatch.setenv(ENV_TOGGLE, "1")
     monkeypatch.setattr(health, "subscription_model", lambda *_args: object())
     result = await health.check_subscription_auth()
     assert result["status"] == "failed"
     assert all(value["class"] == "object" for value in result["providers"].values())
-    assert {call["issueId"] for call in _comments(linear)} == {
-        f"{health.ALERT_TITLE}-id",
-        f"{health.HEARTBEAT_TITLE}-id",
+    assert {call["issueId"] for call in _comments(calls)} == {
+        health.ALERT_TITLE,
+        health.HEARTBEAT_TITLE,
     }
 
 
-async def test_healthy_models_only_post_heartbeat(
-    monkeypatch: pytest.MonkeyPatch, linear: list[tuple[str, dict]]
-) -> None:
-    monkeypatch.setenv(ENV_TOGGLE, "true")
-    monkeypatch.setattr(
-        health,
-        "subscription_model",
-        lambda model_id, _kwargs: _model(health._PROVIDER_MODELS[model_id.split(":")[0]][1]),
-    )
-    result = await health.check_subscription_auth()
-    assert result["status"] == "healthy"
-    assert len(_comments(linear)) == 1
-    assert _comments(linear)[0]["issueId"] == f"{health.HEARTBEAT_TITLE}-id"
-
-
-async def test_alert_dedupes_to_existing_issue(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = []
-
-    async def graphql(query: str, variables: dict) -> dict:
-        calls.append((query, variables))
-        if "SubscriptionHealthIssue(" in query:
-            return {"issues": {"nodes": [{"id": "existing"}]}}
-        if "CommentCreate" in query:
-            return {"commentCreate": {"success": True}}
-        raise AssertionError(query)
-
+async def test_alert_dedupes_to_comment(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, graphql = _graphql()
     monkeypatch.setattr(health, "_graphql_request", graphql)
     await health._write_alert(
         {"openai": {"status": "failed", "class": "object", "live_call": "not run"}}, "now"
     )
-    assert any(variables.get("issueId") == "existing" for _, variables in calls)
+    assert _comments(calls)[0]["issueId"] == health.ALERT_TITLE
     assert not any("IssueCreate" in query for query, _ in calls)
 
 
-async def test_absent_alert_is_created_in_backlog_and_commented(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    inputs = []
-
-    async def graphql(query: str, variables: dict) -> dict:
-        if "SubscriptionHealthIssue(" in query:
-            return {"issues": {"nodes": []}}
-        if "SubscriptionHealthTeam" in query:
-            return {"teams": {"nodes": [{"id": "ope", "states": {"nodes": [{"id": "backlog"}]}}]}}
-        if "IssueCreate" in query:
-            inputs.append(variables["input"])
-            return {"issueCreate": {"success": True, "issue": {"id": "new"}}}
-        if "CommentCreate" in query:
-            assert variables["issueId"] == "new"
-            return {"commentCreate": {"success": True}}
-        raise AssertionError(query)
-
+@pytest.mark.parametrize("heartbeat", [False, True])
+async def test_absent_issue_create_paths(monkeypatch: pytest.MonkeyPatch, heartbeat: bool) -> None:
+    calls, graphql = _graphql(existing=False)
     monkeypatch.setattr(health, "_graphql_request", graphql)
-    await health._write_alert(
-        {"openai": {"status": "failed", "class": "object", "live_call": "not run"}}, "now"
-    )
-    assert inputs[0]["title"] == health.ALERT_TITLE
-    assert inputs[0]["stateId"] == "backlog"
-
-
-async def test_absent_heartbeat_is_created_with_cbass_subscriber(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    inputs = []
-
-    async def graphql(query: str, variables: dict) -> dict:
-        if "SubscriptionHealthIssue(" in query:
-            return {"issues": {"nodes": []}}
-        if "SubscriptionHealthSubscriber" in query:
-            return {"users": {"nodes": [{"id": "cbass"}]}}
-        if "SubscriptionHealthTeam" in query:
-            return {"teams": {"nodes": [{"id": "ope", "states": {"nodes": [{"id": "backlog"}]}}]}}
-        if "IssueCreate" in query:
-            inputs.append(variables["input"])
-            return {"issueCreate": {"success": True, "issue": {"id": "heartbeat"}}}
-        if "CommentCreate" in query:
-            return {"commentCreate": {"success": True}}
-        raise AssertionError(query)
-
-    monkeypatch.setattr(health, "_graphql_request", graphql)
-    await health._write_heartbeat("disabled", {}, "now")
-    assert inputs[0]["subscriberIds"] == ["cbass"]
+    if heartbeat:
+        await health._write_heartbeat("disabled", {}, "now")
+    else:
+        await health._write_alert(
+            {"openai": {"status": "failed", "class": "object", "live_call": "not run"}},
+            "now",
+        )
+    issue_input = next(variables["input"] for query, variables in calls if "IssueCreate" in query)
+    assert issue_input["stateId"] == "backlog"
+    if heartbeat:
+        assert issue_input["subscriberIds"] == ["cbass"]
+    assert len(_comments(calls)) == 1
 
 
 async def test_heartbeat_failure_preserves_verdict_and_alert(
