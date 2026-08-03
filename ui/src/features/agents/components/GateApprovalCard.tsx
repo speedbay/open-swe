@@ -67,8 +67,7 @@ export function GateApprovalCard({
                   </div>
                   <p className="text-xs text-[var(--ui-text-dim)]">
                     {approval.issueId ?? "Linear issue"} ·{" "}
-                    {shortSha(approval.baseSha)} → {shortSha(approval.headSha)}{" "}
-                    · corrective round {approval.rounds}
+                    {shortSha(approval.baseSha)} → {shortSha(approval.headSha)}
                   </p>
                   <p className="font-mono text-[0.68rem] break-all text-[var(--ui-text-dim)]">
                     Fingerprint: {approval.fingerprint}

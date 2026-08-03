@@ -1,8 +1,9 @@
-"""Tests for the OPE-10 gate-breach approval pause.
+"""Tests for the OPE-10/OPE-75 gate-breach approval pause.
 
-The durable record store and the middleware's escalation path are exercised
-with in-memory fakes: a dict-backed LangGraph thread-metadata client and a
-recording Linear client. Behavioral contract per AC: record-before-notify,
+The durable record store and the middleware's first-violation halt are
+exercised with in-memory fakes: a dict-backed LangGraph thread-metadata client
+and a recording Linear client. Behavioral contract per AC: the first violation
+records before notifying and ends the run (no corrective-round budget),
 post-once, one-time fingerprint-bound exemption, re-gate on a new commit,
 reject terminality, restart durability, and fail-loud fallback listing.
 
@@ -18,6 +19,9 @@ from typing import Any, cast
 
 import attrs
 import pytest
+from langchain_core.messages import ToolMessage
+from langgraph.graph import END
+from langgraph.types import Command
 
 from agent.speedbay import gate_approval as ga
 from agent.speedbay import pr_standards as fg
@@ -148,11 +152,11 @@ REQUEST_BODY = (
 REQUEST_BRANCH = "ope-10-gate-breach"
 
 
-def _request(body: str = REQUEST_BODY) -> Any:
+def _request(body: str = REQUEST_BODY, title: str = REQUEST_TITLE) -> Any:
     args = {
         "base": "main",
         "head": REQUEST_BRANCH,
-        "title": REQUEST_TITLE,
+        "title": title,
         "body": body,
     }
 
@@ -176,6 +180,17 @@ async def _fail_handler(request: Any) -> Any:  # pragma: no cover - must not run
 
 
 def _payload(result: Any) -> dict[str, Any]:
+    """Unwrap a gate block: a Command ending the graph with the ToolMessage."""
+    assert isinstance(result, Command)
+    assert result.goto == END
+    assert isinstance(result.update, dict)
+    (message,) = result.update["messages"]
+    return json.loads(str(message.content))
+
+
+def _corrective_payload(result: Any) -> dict[str, Any]:
+    """Unwrap a hygiene corrective block: a plain ToolMessage, run continues."""
+    assert isinstance(result, ToolMessage)
     return json.loads(str(result.content))
 
 
@@ -183,10 +198,10 @@ DIGEST = ga.pr_metadata_digest(REQUEST_TITLE, REQUEST_BODY, REQUEST_BRANCH)
 FP = ga.gate_fingerprint("b" * 40, "h" * 40, ["atomicity"], DIGEST)
 
 
-# --- record-before-notify, post-once (AC 1) -----------------------------------
+# --- first violation: record-before-notify, post-once, run ends (AC 1) --------
 
 
-def test_escalation_creates_record_before_linear_post_and_posts_once(monkeypatch) -> None:
+def test_first_violation_records_before_linear_post_and_posts_once(monkeypatch) -> None:
     client, linear = FakeLangGraphClient(), FakeLinear()
     _wire_store(monkeypatch, client)
     _wire_linear(monkeypatch, linear)
@@ -206,13 +221,8 @@ def test_escalation_creates_record_before_linear_post_and_posts_once(monkeypatch
 
     monkeypatch.setattr(fg, "comment_on_linear_issue", ordered_comment)
 
-    for _ in range(2):
-        payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
-        assert payload["escalation_required"] is False
-        assert not linear.comments  # nothing posts before the cap
-
+    # The FIRST violation halts — no corrective-round budget (OPE-75).
     payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
-    assert payload["escalation_required"] is True
     assert payload["recoverable_by_agent"] is False
     assert payload["gate_approval"]["fingerprint"] == FP
     assert payload["gate_approval"]["status"] == "pending"
@@ -221,8 +231,8 @@ def test_escalation_creates_record_before_linear_post_and_posts_once(monkeypatch
 
     record = client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY][FP]
     assert record["status"] == "pending"
-    assert record["rounds"] == 3
-    assert record["issue_id"] == "uuid-1"  # the UUID, so the escalation comment lands
+    assert "rounds" not in record  # OPE-75: no round counter on new records
+    assert record["issue_id"] == "uuid-1"  # the UUID, so the breach comment lands
     assert record["base_sha"] == "b" * 40 and record["head_sha"] == "h" * 40
     assert record["failed_rule_ids"] == ["atomicity"]
     assert record["diff_stats"]["raw_loc"] == 400
@@ -234,7 +244,7 @@ def test_escalation_creates_record_before_linear_post_and_posts_once(monkeypatch
     assert "OPE-10" in body and "gate breach" in body
     assert record["approval_url"] in body
 
-    # A fourth blocked attempt re-uses the pending record and never re-posts.
+    # A repeat attempt re-uses the pending record and never re-posts.
     _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
     assert len(linear.comments) == 1
 
@@ -246,12 +256,10 @@ def test_linear_post_failure_keeps_record_and_logs_error(monkeypatch, caplog) ->
     _wire_gate(monkeypatch, _gate_backend())
 
     middleware = PRStandardsMiddleware()
-    for _ in range(2):
-        _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
     with caplog.at_level(logging.ERROR):
         payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
 
-    assert payload["escalation_required"] is True
+    assert payload["recoverable_by_agent"] is False
     record = client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY][FP]
     assert record["status"] == "pending"
     assert record["notified"] is False
@@ -262,17 +270,14 @@ def test_linear_post_failure_keeps_record_and_logs_error(monkeypatch, caplog) ->
 # --- approved exemption: exactly once, re-gate on new commit (AC 2) -----------
 
 
-def test_approved_fingerprint_passes_exactly_once_and_new_commit_regates(
-    monkeypatch, caplog
-) -> None:
+def test_approved_fingerprint_passes_exactly_once_and_new_commit_regates(monkeypatch) -> None:
     client, linear = FakeLangGraphClient(), FakeLinear()
     _wire_store(monkeypatch, client)
     _wire_linear(monkeypatch, linear)
     _wire_gate(monkeypatch, _gate_backend())
 
     middleware = PRStandardsMiddleware()
-    for _ in range(3):  # escalate to the pause
-        _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+    _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))  # first violation halts
 
     _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner"))
 
@@ -281,24 +286,20 @@ def test_approved_fingerprint_passes_exactly_once_and_new_commit_regates(
     record = client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY][FP]
     assert record["status"] == ga.GATE_APPROVAL_CONSUMED
 
-    # The same diff re-gates: the exemption was spent, so this is corrective
-    # round 4 on the still-failing diff (corrective message, not an exemption).
-    with caplog.at_level(logging.ERROR):
-        payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+    # The same diff re-gates: the exemption was spent, so the record refreshes
+    # to pending and the run halts again for a fresh human decision.
+    payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
     assert payload["code"] == "pr_standards_failed"
-    assert payload["corrective_round"] == 4
+    assert payload["gate_approval"]["status"] == "pending"
 
-    # A new commit changes the fingerprint: no exemption covers it — the new
-    # diff is a fresh corrective round, and its own escalation pauses again.
+    # A new commit changes the fingerprint: no exemption covers it — its own
+    # pending approval halts the run again.
     _wire_gate(monkeypatch, _gate_backend(head_sha="c" * 40))
     payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
     assert payload["code"] == "pr_standards_failed"
-    assert payload["corrective_round"] == 1
-    assert payload["recoverable_by_agent"] is True
-    for _ in range(2):
-        payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
-    assert payload["escalation_required"] is True
+    assert payload["recoverable_by_agent"] is False
     assert payload["gate_approval"]["fingerprint"] != FP
+    assert payload["gate_approval"]["status"] == "pending"
 
 
 def test_terminal_record_is_not_reopened(monkeypatch) -> None:
@@ -339,38 +340,36 @@ def test_rejected_fingerprint_blocks_forever(monkeypatch) -> None:
     _wire_gate(monkeypatch, _gate_backend())
 
     middleware = PRStandardsMiddleware()
-    for _ in range(3):
-        _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+    _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
     _run(ga.decide_gate_approval("t-1", FP, approved=False, actor="owner"))
 
     payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
     assert payload["gate_approval"]["status"] == ga.GATE_APPROVAL_REJECTED
     assert payload["recoverable_by_agent"] is False
     assert "rejected" in payload["error"]
+    assert "pi-forge" in payload["error"]  # human rework/split guidance
     assert _run(ga.consume_gate_approval("t-1", FP)) is False  # no exemption, ever
 
 
 # --- durability and replay safety (AC 4) ---------------------------------------
 
 
-def test_rounds_and_pending_state_survive_middleware_reinstantiation(monkeypatch) -> None:
+def test_pending_state_survives_middleware_reinstantiation(monkeypatch) -> None:
     client, linear = FakeLangGraphClient(), FakeLinear()
     _wire_store(monkeypatch, client)
     _wire_linear(monkeypatch, linear)
     _wire_gate(monkeypatch, _gate_backend())
 
-    # Two blocked rounds on one "process"…
+    # One halted violation on one "process"…
     first = PRStandardsMiddleware()
-    for expected in (1, 2):
-        payload = _payload(_run(first.awrap_tool_call(_request(), _fail_handler)))
-        assert payload["corrective_round"] == expected
+    _payload(_run(first.awrap_tool_call(_request(), _fail_handler)))
+    assert len(linear.comments) == 1
 
     # …a fresh middleware instance (backend restart) continues from metadata,
-    # not process memory: the next block escalates and does not re-notify.
+    # not process memory: the still-pending breach halts again, no re-post.
     second = PRStandardsMiddleware()
     payload = _payload(_run(second.awrap_tool_call(_request(), _fail_handler)))
-    assert payload["corrective_round"] == 3
-    assert payload["escalation_required"] is True
+    assert payload["gate_approval"]["status"] == "pending"
     assert len(linear.comments) == 1
 
 
@@ -435,8 +434,7 @@ def test_failed_linear_post_still_lists_pending(monkeypatch) -> None:
     _wire_gate(monkeypatch, _gate_backend())
 
     middleware = PRStandardsMiddleware()
-    for _ in range(3):
-        _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+    _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
 
     pending = _run(ga.list_pending_gate_approvals())
     assert [row["thread_id"] for row in pending] == ["t-1"]
@@ -465,14 +463,6 @@ def test_mark_notified_sets_flag_and_timestamp(monkeypatch) -> None:
     assert record["notified"] is True
     assert isinstance(record["notified_at"], str)
     _run(ga.mark_gate_approval_notified("t-1", "missing"))  # no-op, no error
-
-
-def test_bump_rounds_works_without_a_pending_record(monkeypatch) -> None:
-    client = FakeLangGraphClient()
-    _wire_store(monkeypatch, client)
-    assert _run(ga.bump_gate_rounds("t-1", FP)) == 1
-    assert _run(ga.bump_gate_rounds("t-1", FP)) == 2
-    assert "status" not in _run(ga.get_gate_approvals("t-1"))[FP]
 
 
 # --- review-hardening regressions (PR #44 review) ------------------------------
@@ -637,11 +627,9 @@ def test_escalation_advice_reflects_failed_linear_post(monkeypatch) -> None:
     _wire_gate(monkeypatch, _gate_backend())
 
     middleware = PRStandardsMiddleware()
-    for _ in range(2):
-        _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
     payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
 
-    assert payload["escalation_required"] is True
+    assert payload["recoverable_by_agent"] is False
     assert "no further surfacing is needed" not in payload["error"]
     assert "could NOT post its Linear comment" in payload["error"]
     assert "surface this gate failure to a human" in payload["error"]
@@ -656,8 +644,7 @@ def test_approval_is_content_bound_not_just_diff_bound(monkeypatch) -> None:
     _wire_gate(monkeypatch, _gate_backend())
 
     middleware = PRStandardsMiddleware()
-    for _ in range(3):  # escalate the reviewed content to the pause
-        _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+    _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))  # halt reviewed content
     _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner"))
 
     # Same diff SHAs, same failed rule ids, different body content: a distinct
@@ -672,6 +659,65 @@ def test_approval_is_content_bound_not_just_diff_bound(monkeypatch) -> None:
     assert record["status"] == ga.GATE_APPROVAL_APPROVED  # untouched
     # The reviewed content itself still passes on its one-time exemption.
     assert _run(middleware.awrap_tool_call(_request(), _pass_handler)) == "pr-opened"
+
+
+def test_approved_exemption_resets_hygiene_budget(monkeypatch) -> None:
+    """A consumed approval wipes the exhausted hygiene budget: the next
+    hygiene defect gets fresh remediation attempts, not instant escalation
+    (PR #54 review)."""
+    client, linear = FakeLangGraphClient(), FakeLinear()
+    _wire_store(monkeypatch, client)
+    _wire_linear(monkeypatch, linear)
+    _wire_gate(monkeypatch, _gate_backend("1\t0\tagent/api.py\n"))  # atomicity passes
+
+    middleware = PRStandardsMiddleware()
+    bad = _request(title="update stuff")  # hygiene-only failure
+    for _ in range(2):  # two corrective retries…
+        corrective = _corrective_payload(_run(middleware.awrap_tool_call(bad, _fail_handler)))
+        assert corrective["code"] == "pr_standards_hygiene_retry"
+    payload = _payload(_run(middleware.awrap_tool_call(bad, _fail_handler)))  # …then escalation
+    assert payload["disposition"] == "escalated_after_remediation_budget"
+    fingerprint = payload["gate_approval"]["fingerprint"]
+
+    _run(ga.decide_gate_approval("t-1", fingerprint, approved=True, actor="owner"))
+    # Option A: approve opens the PR as-is on the one-time exemption.
+    assert _run(middleware.awrap_tool_call(bad, _pass_handler)) == "pr-opened"
+
+    # A NEW hygiene defect starts with a fresh budget — corrective retry,
+    # never an instant escalation off the stale exhausted counter.
+    other = _corrective_payload(
+        _run(middleware.awrap_tool_call(_request(title="also wrong"), _fail_handler))
+    )
+    assert other["code"] == "pr_standards_hygiene_retry"
+
+
+def test_lost_consume_race_reports_consumed_not_pending(monkeypatch) -> None:
+    """An attempt that loses the one-time-exemption consume race must halt
+    with the real 'exemption_consumed' state, not a pending approval that
+    can never arrive (PR #54 review)."""
+    client, linear = FakeLangGraphClient(), FakeLinear()
+    _wire_store(monkeypatch, client)
+    _wire_linear(monkeypatch, linear)
+    _wire_gate(monkeypatch, _gate_backend())
+
+    middleware = PRStandardsMiddleware()
+    _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))  # pending halt
+    _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner"))
+
+    real_consume = ga.consume_gate_approval
+
+    async def racing_consume(thread_id: str, fingerprint: str) -> bool:
+        # A concurrent attempt wins the race…
+        assert await real_consume(thread_id, fingerprint) is True
+        # …so this attempt's consume loses.
+        return await real_consume(thread_id, fingerprint)
+
+    monkeypatch.setattr(fg, "consume_gate_approval", racing_consume)
+    payload = _payload(_run(middleware.awrap_tool_call(_request(), _fail_handler)))
+    assert payload["gate_approval"]["status"] == ga.GATE_APPROVAL_CONSUMED
+    assert "already consumed" in payload["error"]
+    assert "pending human approval" not in payload["error"]
+    assert payload["recoverable_by_agent"] is False
 
 
 def test_rejection_racing_the_pending_write_still_blocks_terminally(monkeypatch) -> None:

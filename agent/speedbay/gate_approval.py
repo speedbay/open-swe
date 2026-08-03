@@ -9,8 +9,11 @@ Unlike workflow approvals (consumed once per retry), a gate approval is a
 **one-time** exemption: ``consume_gate_approval`` flips an ``approved``
 record to ``exemption_consumed`` so the same fingerprint never passes
 twice, and any new commit (changed head SHA) changes the fingerprint and
-re-gates. The PR-standards round counter also lives here (``rounds`` in
-the per-fingerprint record) so escalation state survives backend restarts.
+re-gates. There is no corrective-round budget (OPE-75): the first HARD
+(atomicity) violation records the pending approval and ends the run.
+REMEDIABLE hygiene-only violations are corrected in-run by the agent and
+reach this store only when their remediation budget is exhausted (see
+``pr_standards.py``). Legacy stored ``rounds`` keys are ignored.
 """
 
 from __future__ import annotations
@@ -36,7 +39,7 @@ GATE_APPROVAL_CONSUMED = "exemption_consumed"
 _MAX_APPROVAL_RECORDS = 20
 # Statuses the dashboard cannot decide again. CONSUMED is deliberately absent:
 # a spent exemption's record is refreshed back to pending by the next
-# non-compliant attempt on the same diff (rounds keep accumulating).
+# non-compliant attempt on the same diff.
 _TERMINAL_STATUSES = {GATE_APPROVAL_REJECTED}
 
 
@@ -142,7 +145,7 @@ async def ensure_gate_approval_pending(
     A consumed record (spent one-time exemption) is refreshed back to
     ``pending`` with ``notified`` cleared, per the module contract: a new
     non-compliant attempt on the same diff starts a new approval cycle
-    (rounds keep accumulating) and must be dashboard-discoverable again.
+    and must be dashboard-discoverable again.
     """
     async with _thread_locks[thread_id]:
         approvals = await get_gate_approvals(thread_id)
@@ -174,7 +177,6 @@ async def ensure_gate_approval_pending(
             "fingerprint": fingerprint,
             "status": GATE_APPROVAL_PENDING,
             **review_fields,
-            "rounds": 0,
             "requested_at": _now(),
             "notified": False,
         }
@@ -210,24 +212,6 @@ def _diff_stats_response(value: Mapping[str, Any] | None) -> dict[str, Any]:
         "productionFiles": stats["production_files"],
         "exceeded": stats["exceeded"],
     }
-
-
-async def bump_gate_rounds(thread_id: str, fingerprint: str) -> int:
-    """Increment and return the durable corrective-round counter.
-
-    Creates a rounds-only record when none exists yet (the pending record
-    arrives at escalation); terminal records are left untouched.
-    """
-    async with _thread_locks[thread_id]:
-        approvals = await get_gate_approvals(thread_id)
-        record = approvals.get(fingerprint)
-        if record and record.get("status") in _TERMINAL_STATUSES:
-            return _safe_int(record.get("rounds"))
-        record = {"fingerprint": fingerprint, **(record or {})}
-        record["rounds"] = _safe_int(record.get("rounds")) + 1
-        approvals[fingerprint] = record
-        await _save_approvals(thread_id, approvals)
-        return int(record["rounds"])
 
 
 async def mark_gate_approval_notified(
@@ -320,7 +304,6 @@ def gate_approval_response(record: Mapping[str, Any]) -> dict[str, Any]:
         else [],
         "diffStats": _diff_stats_response(diff_stats if isinstance(diff_stats, Mapping) else None),
         "evidenceTail": str(record.get("evidence_tail") or ""),
-        "rounds": _safe_int(record.get("rounds")),
         "approvalUrl": approval_url if isinstance(approval_url, str) and approval_url else None,
         "requestedAt": requested_at if isinstance(requested_at, str) else None,
         "decidedAt": decided_at if isinstance(decided_at, str) else None,

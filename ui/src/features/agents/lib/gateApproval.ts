@@ -30,7 +30,6 @@ export interface GateApproval {
   evidenceTail: string
   approvalUrl: string | null
   notified: boolean
-  rounds: number
   requestedAt: string | null
   decidedAt: string | null
   decidedBy: string | null

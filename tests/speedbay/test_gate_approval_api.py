@@ -1,4 +1,4 @@
-"""Tests for the gate-breach approval dashboard API (OPE-10)."""
+"""Tests for the gate-breach approval dashboard API (OPE-10, OPE-75)."""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ def _pending_record(**overrides: object) -> dict:
         "approval_url": "https://dash/agents/t-1?gateApproval=fp-1",
         "requested_at": "2026-08-01T00:00:00+00:00",
         "notified": True,
-        "rounds": 3,
     }
     record.update(overrides)
     return record
@@ -67,7 +66,7 @@ async def test_list_gate_approvals_returns_records_for_owner(monkeypatch) -> Non
     assert approval["status"] == "pending"
     assert approval["issueId"] == "OPE-10"
     assert approval["failedRuleIds"] == ["atomicity"]
-    assert approval["rounds"] == 3
+    assert "rounds" not in approval  # OPE-75: no corrective-round presentation
     assert approval["diffStats"]["rawLoc"] == 400
 
 
@@ -132,6 +131,33 @@ async def test_reject_posts_linear_comment_and_dispatches_nothing(monkeypatch) -
     assert issue_id == "OPE-10"
     assert "rejected" in body and FP in body
     assert "https://dash/agents/t-1?gateApproval=fp-1" in body
+    # OPE-75: rejection directs a human to pi-forge planning rework/split.
+    assert "pi-forge" in body
+    assert "rework or split" in body
+
+
+def test_module_binds_no_linear_state_mutation_seam() -> None:
+    """OPE-75 AC 3: neither decision path may mutate Linear issue state.
+
+    Namespace sentinel: no callable bound anywhere in the module — under any
+    alias — may be a known Linear state-mutation function. Inspecting module
+    bindings (``__name__`` of every bound callable) catches an aliased
+    ``from ... import update_issue as x`` that a source-text scan misses,
+    and cannot false-positive on comments or docstrings. Purely behavioral
+    stubbing is not available here: the module imports no mutation seam, so
+    there is nothing to stub — the absence of such a binding is exactly what
+    this test proves. The approve/reject behavioral paths are covered by the
+    endpoint tests above with their failing dispatch/comment sentinels.
+    """
+    forbidden = {"update_issue", "linear_update_issue", "transition_issue_state"}
+    bound = {
+        getattr(value, "__name__", None)
+        for value in vars(gate_approval_api).values()
+        if callable(value)
+    }
+    assert not (forbidden & bound), (
+        f"Linear state-mutation seam bound in module: {forbidden & bound}"
+    )
 
 
 async def test_reject_requires_thread_owner(monkeypatch) -> None:

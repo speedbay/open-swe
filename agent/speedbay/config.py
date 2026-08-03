@@ -70,7 +70,9 @@ WORKSPACE = "/workspace"  # sandbox checkout root both gates diff against
 COMMAND_TIMEOUT_SECONDS = 15 * 60  # per quality-gate command
 DIFF_TIMEOUT_SECONDS = 120  # git diff inside the sandbox
 OUTPUT_TAIL_CHARS = 2000  # command-output tail kept as failure evidence
-MAX_CORRECTIVE_ROUNDS = 3  # PR-standards blocks per thread before escalation (OPE-10)
+# Hygiene-only PR-standards failures are agent-remediable (OPE-75): allowed
+# failed attempts per thread before the run escalates to human approval.
+HYGIENE_REMEDIATION_ATTEMPTS = 3
 
 # --- Linear (linear_guard.py) --------------------------------------------------
 
