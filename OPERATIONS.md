@@ -302,6 +302,14 @@ fail fast, as do failed health checks and attempts to start a duplicate instance
 `/tmp/openswe-backend.log`, `/tmp/openswe-tunnel.log`. Once `start` reports
 LIVE, every `@openswe` Linear comment triggers a containerized run.
 
+### Disk reclaim
+
+A weekly systemd timer (`openswe-prune.timer`) prunes stopped containers and dangling images
+older than 7 days. Named images (`openswe-sandbox:dev`) are never removed. Enable it on the host
+with `sudo systemctl enable --now openswe-prune.timer`. Check its status with
+`systemctl status openswe-prune.timer`, or run it manually with
+`sudo systemctl start openswe-prune.service`.
+
 ### On the Azure host (systemd)
 
 Install the deployment units as symlinks so a checkout update changes the source files in place,
