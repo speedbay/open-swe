@@ -226,13 +226,11 @@ output is in the journal.
 cd /home/openswe/open-swe
 git pull --ff-only
 uv sync
-cd ui && pnpm build
+cd ui && pnpm install --frozen-lockfile && pnpm build
 sudo systemctl restart openswe-backend.service openswe-tunnel.service openswe-dashboard.service
 ```
 
-Then run the B6 status command and confirm all three services are active. If
-`pnpm-lock.yaml` changed, run `pnpm install --frozen-lockfile` before
-`pnpm build`.
+Then run the B6 status command and confirm all three services are active.
 
 ### B8. Smoke run (end to end)
 
