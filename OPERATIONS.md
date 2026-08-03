@@ -234,8 +234,13 @@ One-time login per machine (headless device-code flow; token store
 `~/.langchain/chatgpt-auth.json`, refresh + rotation handled automatically):
 
 ```bash
-.venv/bin/python -c 'from langchain_openai.chatgpt_oauth import login_chatgpt_device; login_chatgpt_device()'
+.venv/bin/python -c 'from agent.speedbay.chatgpt_device_login import login_chatgpt_device; login_chatgpt_device()'
 ```
+
+The upstream `langchain_openai.chatgpt_oauth.login_chatgpt_device` is broken
+against the current deviceauth endpoints (they moved to JSON bodies, renamed
+fields, and changed the pending/PKCE contract; OPE-81), so the login goes
+through the org-owned `agent/speedbay/chatgpt_device_login.py`.
 
 Do **not** copy the token store between machines — refresh tokens rotate on
 use, so two hosts sharing a copied store invalidate each other. Log in once
