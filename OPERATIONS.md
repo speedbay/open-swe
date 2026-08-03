@@ -302,16 +302,26 @@ fail fast, as do failed health checks and attempts to start a duplicate instance
 `/tmp/openswe-backend.log`, `/tmp/openswe-tunnel.log`. Once `start` reports
 LIVE, every `@openswe` Linear comment triggers a containerized run.
 
+### Disk reclaim
+
+A weekly systemd timer (`openswe-prune.timer`) prunes stopped containers and dangling images
+older than 7 days. Named images (`openswe-sandbox:dev`) are never removed. Enable it on the host
+with `sudo systemctl enable --now openswe-prune.timer`. Check its status with
+`systemctl status openswe-prune.timer`, or run it manually with
+`sudo systemctl start openswe-prune.service`.
+
 ### On the Azure host (systemd)
 
 Install the deployment units as symlinks so a checkout update changes the source files in place,
-then enable and start both processes:
+then enable and start both processes and the prune timer:
 
 ```bash
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-backend.service /etc/systemd/system/openswe-backend.service
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-tunnel.service /etc/systemd/system/openswe-tunnel.service
+sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-prune.service /etc/systemd/system/openswe-prune.service
+sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-prune.timer /etc/systemd/system/openswe-prune.timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now openswe-backend.service openswe-tunnel.service
+sudo systemctl enable --now openswe-backend.service openswe-tunnel.service openswe-prune.timer
 ```
 
 Use `systemctl status openswe-backend.service openswe-tunnel.service` for current state and

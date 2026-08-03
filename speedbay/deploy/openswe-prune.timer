@@ -1,0 +1,10 @@
+[Unit]
+Description=Prune stale Open SWE Docker resources weekly
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+Unit=openswe-prune.service
+
+[Install]
+WantedBy=timers.target
