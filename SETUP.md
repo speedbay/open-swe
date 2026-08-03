@@ -151,7 +151,9 @@ required = {
 }
 values = dotenv_values(".env")
 missing = sorted(key for key in required if not values.get(key))
-raise SystemExit(f"missing values: {', '.join(missing)}" if missing else "env-ready")
+if missing:
+    raise SystemExit(f"missing values: {', '.join(missing)}")
+print("env-ready")
 PY
 ```
 
