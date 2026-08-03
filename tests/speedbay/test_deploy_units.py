@@ -42,7 +42,7 @@ def test_tunnel_unit_supervises_named_tunnel() -> None:
     assert unit["Unit"]["After"].split() == ["network-online.target"]
 
 
-def test_tunnel_config_routes_backend_then_returns_404() -> None:
+def test_tunnel_config_routes_public_webhooks_and_health_then_returns_404() -> None:
     config = yaml.safe_load((DEPLOY_DIR / "tunnel-config.yml").read_text())
 
     assert config["tunnel"] == "openswe"
@@ -50,7 +50,20 @@ def test_tunnel_config_routes_backend_then_returns_404() -> None:
         "/home/openswe/.cloudflared/66d09a43-7dac-4001-9adb-b6df1806796d.json"
     )
     assert config["ingress"] == [
-        {"hostname": "openswe.speedbay.com", "service": "http://localhost:2024"},
+        {
+            "hostname": "openswe.speedbay.com",
+            "path": "^/webhooks/.*",
+            "service": "http://localhost:2024",
+        },
+        {
+            "hostname": "openswe.speedbay.com",
+            "path": "^/health$",
+            "service": "http://localhost:2024",
+        },
         {"hostname": "openswe-dash.speedbay.com", "service": "http://localhost:8080"},
         {"service": "http_status:404"},
     ]
+    assert not any(
+        rule.get("hostname") == "openswe.speedbay.com" and "path" not in rule
+        for rule in config["ingress"]
+    )
