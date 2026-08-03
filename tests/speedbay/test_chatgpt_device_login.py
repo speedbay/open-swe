@@ -126,6 +126,45 @@ def test_poll_is_json_and_pending_403_loops_to_success(
         assert "data" not in poll
 
 
+@pytest.mark.parametrize("interval", [-1, float("nan")])
+def test_invalid_poll_interval_uses_default(
+    http: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interval: float,
+) -> None:
+    http["script"][CHATGPT_DEVICE_CODE_URL][0]["body"] = {
+        **_START_RESPONSE,
+        "interval": interval,
+    }
+    sleeps: list[float] = []
+    monkeypatch.setattr(chatgpt_device_login.time, "sleep", sleeps.append)
+
+    login_chatgpt_device(store_path=tmp_path / "chatgpt-auth.json")
+
+    assert sleeps == [5.0]
+
+
+def test_poll_timeout_respects_remaining_authorization_window(
+    http: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    poll_timeouts: list[float] = []
+    original_poll = chatgpt_device_login._post_device_poll_json
+
+    def record_poll_timeout(
+        url: str, body: dict[str, str], *, timeout: float = 30.0
+    ) -> dict[str, Any] | None:
+        poll_timeouts.append(timeout)
+        return original_poll(url, body, timeout=timeout)
+
+    monkeypatch.setattr(chatgpt_device_login, "_post_device_poll_json", record_poll_timeout)
+    monkeypatch.setattr(chatgpt_device_login.time, "monotonic", lambda: 100.0)
+
+    login_chatgpt_device(store_path=tmp_path / "chatgpt-auth.json", timeout=1.0)
+
+    assert poll_timeouts == [1.0, 1.0]
+
+
 def test_exchange_uses_server_verifier_and_deviceauth_redirect(
     http: dict[str, Any], tmp_path: Path
 ) -> None:

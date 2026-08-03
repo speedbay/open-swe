@@ -21,6 +21,7 @@ consumed by ``agent/speedbay/subscription_auth.py`` unchanged.
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -39,9 +40,11 @@ from langchain_openai.chatgpt_oauth import (
     _token_from_response,
 )
 
-DEVICE_VERIFICATION_URL = "https://auth.openai.com/codex/device"
-DEVICE_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback"
-DEFAULT_TIMEOUT_SECONDS = 900.0  # ~15 minutes, matching the user-code expiry
+from agent.speedbay.config import (
+    DEFAULT_CHATGPT_DEVICE_TIMEOUT_SECONDS as DEFAULT_TIMEOUT_SECONDS,
+)
+from agent.speedbay.config import DEVICE_REDIRECT_URI, DEVICE_VERIFICATION_URL
+
 _PENDING_ERROR_CODE = "deviceauth_authorization_pending"
 
 
@@ -118,6 +121,8 @@ def login_chatgpt_device(
         interval = float(start.get("interval") or 5)
     except (TypeError, ValueError):
         interval = 5.0
+    if not math.isfinite(interval) or interval < 0:
+        interval = 5.0
 
     print(  # noqa: T201
         "\nFollow these steps to sign in with ChatGPT using device code "
@@ -133,6 +138,7 @@ def login_chatgpt_device(
         success = _post_device_poll_json(
             CHATGPT_DEVICE_TOKEN_URL,
             {"device_auth_id": device_auth_id, "user_code": user_code},
+            timeout=max(deadline - time.monotonic(), 0.0),
         )
         if success is not None:
             break
