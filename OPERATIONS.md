@@ -364,6 +364,37 @@ different, unlabeled failure. Complete ALL of them before the first login:
 > feeds it straight to `Fernet(...)`, which requires **url-safe** base64 —
 > openssl output containing `+`/`/` is rejected. Use the Fernet generator.
 
+#### Production (host) values
+
+Caddy serves the built dashboard and proxies `/dashboard/api/*` on the same
+`https://openswe-dash.speedbay.com` origin. Keep the local-dev `:3000` values
+above unchanged; on the host, set:
+
+```bash
+# .env
+DASHBOARD_API_BASE_URL="https://openswe-dash.speedbay.com"
+DASHBOARD_BASE_URL="https://openswe-dash.speedbay.com"
+DASHBOARD_ALLOWED_ORIGINS="https://openswe-dash.speedbay.com,https://smith.langchain.com"
+
+# ui/.env
+VITE_DASHBOARD_API_BASE_URL="https://openswe-dash.speedbay.com"
+```
+
+The `https://` API URL makes the session cookie `Secure` with
+`SameSite=None`, as documented in `docs/INSTALLATION.md` §6. Keeping
+`https://smith.langchain.com` in `DASHBOARD_ALLOWED_ORIGINS` preserves
+LangGraph Studio access; whether public-origin Studio access is wanted remains
+a non-blocking operations decision.
+
+Build the static dashboard after checkout updates:
+
+```bash
+cd ui && pnpm install && pnpm build
+```
+
+Adding `https://openswe-dash.speedbay.com/dashboard/api/auth/callback` to the
+GitHub App callback URLs is an operations step owned by the cutover issue.
+
 The GitHub App must also list `http://localhost:2024/dashboard/api/auth/callback`
 as a callback URL (§3b) — App settings, not env. Restart both processes
 (`speedbay/openswe stop && speedbay/openswe start`; re-run `pnpm dev`) after changing either
