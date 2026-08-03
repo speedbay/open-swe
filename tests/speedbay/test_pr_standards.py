@@ -137,6 +137,7 @@ def _halt_payload(result: Any) -> dict[str, Any]:
     """Assert the OPE-75 halt shape: Command ending the graph with the block."""
     assert isinstance(result, Command)
     assert result.goto == END
+    assert isinstance(result.update, dict)
     (message,) = result.update["messages"]
     assert isinstance(message, ToolMessage)
     assert message.tool_call_id == "call-1"
@@ -331,7 +332,7 @@ def test_violating_open_pull_request_ends_run_without_second_model_call(monkeypa
     never reaches its handler and the graph ends without a second model call."""
     from langchain.agents import create_agent
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-    from langchain_core.messages import AIMessage
+    from langchain_core.messages import AIMessage, HumanMessage
     from langchain_core.tools import tool
 
     _wire(monkeypatch, _numstat("400\t0\tagent/api.py\n"))
@@ -380,7 +381,7 @@ def test_violating_open_pull_request_ends_run_without_second_model_call(monkeypa
         tools=[open_pull_request],
         middleware=[PRStandardsMiddleware()],
     )
-    result = _run(agent.ainvoke({"messages": [("user", "open the PR")]}))
+    result = _run(agent.ainvoke({"messages": [HumanMessage(content="open the PR")]}))
 
     assert model_calls["count"] == 1  # the tool-calling turn only
     assert handled == []  # the PR tool handler was never called

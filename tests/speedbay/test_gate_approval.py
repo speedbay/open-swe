@@ -182,6 +182,7 @@ def _payload(result: Any) -> dict[str, Any]:
     """Unwrap a gate block: a Command ending the graph with the ToolMessage."""
     assert isinstance(result, Command)
     assert result.goto == END
+    assert isinstance(result.update, dict)
     (message,) = result.update["messages"]
     return json.loads(str(message.content))
 
