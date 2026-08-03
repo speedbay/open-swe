@@ -35,6 +35,11 @@ async def _launch(state: SchedulerState, config: RunnableConfig) -> dict[str, An
         from .speedbay.verify_sweep import sweep_stale_verify_issues
 
         return {"result": await sweep_stale_verify_issues()}
+    # SPEEDBAY REGISTRATION (OPE-68): nightly in-system subscription OAuth health check.
+    if task == "subscription_health":
+        from .speedbay.subscription_health import check_subscription_auth
+
+        return {"result": await check_subscription_auth()}
     schedule_id = state.get("schedule_id") or configurable.get("schedule_id")
     if not isinstance(schedule_id, str) or not schedule_id:
         logger.warning("Scheduled agent tick missing schedule_id")
