@@ -48,6 +48,12 @@ def sandbox_memory() -> str:
     return os.getenv(MEMORY_ENV, DEFAULT_MEMORY)
 
 
+# --- ChatGPT device login (chatgpt_device_login.py) --------------------------
+
+DEVICE_VERIFICATION_URL = "https://auth.openai.com/codex/device"
+DEVICE_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback"
+DEFAULT_CHATGPT_DEVICE_TIMEOUT_SECONDS = 900.0  # matches the user-code expiry
+
 # --- Verify sweep (verify_sweep.py) ------------------------------------------
 
 VERIFY_SWEEP_MIN_AGE_ENV = "OPENSWE_VERIFY_SWEEP_MIN_AGE_SECONDS"
