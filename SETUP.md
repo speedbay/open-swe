@@ -1,184 +1,251 @@
 # Open SWE setup — zero to running
 
-Ordered onboarding checklist. Every step is either an exact command or a
-pointer to the authoritative doc section (OPERATIONS.md here; upstream
-`docs/INSTALLATION.md` for GitHub App / LangSmith mechanics). Each phase ends
-with a **Verify** command and its expected output — run them; do not assume.
+This checklist has two paths:
 
-Two paths:
+- **Path A — new teammate.** Join the existing always-on deployment and start
+  triggering runs. No local clone, tunnel, webhook, or running process is
+  required.
+- **Path B — host administration (operators).** Provision, operate, and upgrade
+  the shared deployment on the Azure host.
 
-- **Path A — new teammate.** The deployment already runs on an operator's
-  machine. You need trigger rights and visibility. ~10 minutes, no code.
-- **Path B — operator machine.** Stand up the whole stack from a clone.
+Every phase ends with a **Verify** command or observable result. Operational
+background and troubleshooting live in [`OPERATIONS.md`](OPERATIONS.md);
+upstream GitHub App and environment mechanics live in
+[`docs/INSTALLATION.md`](docs/INSTALLATION.md).
 
 ---
 
 ## Path A — new teammate on the existing deployment
 
-1. **GitHub**: get added to the `speedbay` GitHub org (dashboard login is
-   org-gated, fail-closed) and confirm you can see
+1. **GitHub:** get added to the `speedbay` GitHub organization (dashboard login
+   is org-gated, fail-closed) and confirm you can see
    `github.com/speedbay/warehouse`.
-2. **Linear**: get a seat in the `linear.app/speed-bay` workspace with access
-   to your team's project.
-3. **User mapping**: an operator seeds your `github-login → work-email`
-   mapping (OPERATIONS.md § User mappings without Slack OAuth — the UI cannot
-   create mappings until Slack OAuth is configured). Unmapped users can still
-   trigger runs, but with limited bot permissions and no attribution.
-4. **Trigger a run**: comment `@openswe <what you want>` on a Linear ticket
-   from your personal account (bot/API comments are dropped by the
-   self-trigger guard, OPERATIONS.md § Linear trigger). The run works the ticket's
-   repo; PRs come back attributed to you.
-5. **Watch it**: on the operator machine's dashboard (`http://localhost:3000`),
-   your run appears in the sidebar thread list; cost lands under `/usage`.
-   Remote dashboard access is a known gap — the GitHub App callback is
-   registered for the operator host only.
+2. **Linear:** get a seat in the `linear.app/speed-bay` workspace with access to
+   your team's project.
+3. **User mapping:** ask a host administrator to seed your
+   `github-login → work-email` mapping. The administrator runs this on the
+   Azure host, replacing the example login and email:
 
-**Verify (operator runs, after step 3):**
+   ```bash
+   cd /home/openswe/open-swe
+   GITHUB_LOGIN="octocat" WORK_EMAIL="teammate@speedbay.com" .venv/bin/python - <<'PY'
+   import asyncio
+   import os
+   from datetime import UTC, datetime
 
-```bash
-cd open-swe && .venv/bin/python - <<'EOF'
-import asyncio
-from langgraph_sdk import get_client
-async def main():
-    r = await get_client(url="http://localhost:2024").store.search_items(["user_mappings"], limit=50)
-    items = r["items"] if isinstance(r, dict) else r.items
-    for it in items:
-        v = it["value"] if isinstance(it, dict) else it.value
-        print(v["github_login"], "->", v["work_email"], v["status"])
-asyncio.run(main())
-EOF
-```
+   from langgraph_sdk import get_client
 
-Expected: one `active` line per mapped teammate, including the new one.
+   async def main():
+       now = datetime.now(UTC).isoformat()
+       login = os.environ["GITHUB_LOGIN"]
+       email = os.environ["WORK_EMAIL"]
+       client = get_client(url="http://127.0.0.1:2024")
+       await client.store.put_item(
+           ["user_mappings"],
+           login,
+           {
+               "github_login": login,
+               "work_email": email,
+               "slack_user_id": None,
+               "source": "slack_oauth",
+               "status": "active",
+               "created_at": now,
+               "updated_at": now,
+           },
+       )
+       print(login, "->", email, "active")
+
+   asyncio.run(main())
+   PY
+   sudo systemctl restart openswe-backend.service
+   ```
+
+   Expected: one `active` line for the new teammate. This direct Store mapping
+   is needed while Slack OAuth is disabled; see OPERATIONS.md § User mappings
+   without Slack OAuth. Unmapped users can trigger runs, but with limited bot
+   permissions and no attribution.
+4. **Trigger a run:** comment `@openswe <what you want>` on a Linear ticket from
+   your personal account. Bot/API comments are dropped by the self-trigger
+   guard (OPERATIONS.md § Linear trigger). The run works the ticket's repository
+   and returns PRs attributed to you.
+5. **Watch it:** open <https://openswe-dash.speedbay.com>, sign in with GitHub,
+   and confirm the run appears in the sidebar thread list. Usage appears under
+   `/usage`.
+
+**Verify:** the thread appears within seconds, the run completes, its PR opens
+ready for review, and its usage is visible in the dashboard.
 
 ---
 
-## Path B — operator machine from zero
+## Path B — Host administration (operators)
 
-### B1. Prerequisites
+All commands in this path run on the Azure host unless stated otherwise. The
+checked-in deployment definitions are in [`speedbay/deploy/`](speedbay/deploy/).
+Laptop-hosted and multi-machine deployments remain supported for development;
+use OPERATIONS.md § Webhook tunnel → Per-machine setup and § Linear trigger
+rather than adding their tunnels, webhooks, or owner scopes to member
+onboarding.
 
-- Docker daemon (or Colima) running: `docker info` succeeds
-- [`uv`](https://docs.astral.sh/uv/), Node 22+ (`corepack enable pnpm` once),
-  `gh` CLI authenticated as **you**, `cloudflared`
-- The Speed Bay GitHub App already exists (create one only for a brand-new
-  org: `docs/INSTALLATION.md` §3, incl. **Organization → Members: Read-only**
-  permission and both OAuth callback URLs from §3b/3c)
+### B1. Host prerequisites
 
-**Verify:** `docker info >/dev/null && uv --version && node -v && gh auth status && cloudflared --version`
+- Ubuntu 24.04 host with the `openswe` account and `/home/openswe` home
+- Docker daemon, `git`, [`uv`](https://docs.astral.sh/uv/), Node 22+,
+  `cloudflared`, and Caddy
+- pnpm enabled once through Node's Corepack: `corepack enable pnpm`
+- Speed Bay GitHub App credentials and Cloudflare named-tunnel credentials
+  available through the operations password manager
 
-### B2. Clone and env
+**Verify:**
 
 ```bash
-git clone https://github.com/speedbay/open-swe && cd open-swe
-uv sync                                    # creates .venv
+docker info >/dev/null && git --version && uv --version && node -v
+pnpm --version && cloudflared --version && caddy version
 ```
 
-Populate `.env` from `docs/INSTALLATION.md` §6, then apply — in this order —
-the two OPERATIONS.md checklists, which exist because the sample block ships
-several values **empty with an inline comment**, each failing differently:
+### B2. Clone and populate host environment
 
-1. OPERATIONS.md § Local boot (credential-free) — the three deviations
-   (`LANGCHAIN_TRACING_V2`, `SANDBOX_TYPE="docker"`, dashboard vars).
-2. OPERATIONS.md § Dashboard → **Login env checklist** — the full required table:
+The systemd units use this exact checkout path:
+
+```bash
+cd /home/openswe
+git clone https://github.com/speedbay/open-swe.git
+cd /home/openswe/open-swe
+uv sync
+```
+
+Populate `/home/openswe/open-swe/.env` from `docs/INSTALLATION.md` §6, then
+apply these OPERATIONS.md checklists:
+
+1. § Local boot (credential-free): set `LANGCHAIN_TRACING_V2="false"` and
+   `SANDBOX_TYPE="docker"`. Do not use that section's local dashboard URL
+   value on the production host.
+2. § Dashboard → Login env checklist: populate
    `GITHUB_APP_CLIENT_ID/SECRET`, `DASHBOARD_JWT_SECRET`,
-   `DASHBOARD_API_BASE_URL`, `DASHBOARD_BASE_URL`,
-   `DASHBOARD_ALLOWED_ORIGINS`, `ALLOWED_GITHUB_ORGS` (empty = org gate
-   **off**, fail-open), `TOKEN_ENCRYPTION_KEY` (**Fernet** key — see the
-   checklist's caveat; the docs' openssl command intermittently produces
-   invalid keys), `CONFIGURED_ADMINS`, and `ui/.env` with
-   `VITE_DASHBOARD_API_BASE_URL`.
+   `TOKEN_ENCRYPTION_KEY`, `CONFIGURED_ADMINS`, and
+   `ALLOWED_GITHUB_ORGS="speedbay"`.
+3. § Dashboard → Production (host) values: set `DASHBOARD_API_BASE_URL`,
+   `DASHBOARD_BASE_URL`, `DASHBOARD_ALLOWED_ORIGINS`, and
+   `ui/.env`'s `VITE_DASHBOARD_API_BASE_URL` for
+   `https://openswe-dash.speedbay.com`.
 
-**Verify (no empty login-path vars):**
+The shared instance is intentionally unscoped. Do not add any per-owner trigger
+filter to the host environment. Optional feature variables can remain empty
+when their features are disabled.
+
+**Verify that required login variables are present and non-empty:**
 
 ```bash
-awk -F= '/^[A-Z][A-Z0-9_]*=/{v=$2; sub(/[ \t]*#.*$/,"",v); gsub(/"/,"",v); if (length(v)==0) print $1}' .env
+.venv/bin/python - <<'PY'
+from dotenv import dotenv_values
+
+required = {
+    "ALLOWED_GITHUB_ORGS",
+    "CONFIGURED_ADMINS",
+    "DASHBOARD_ALLOWED_ORIGINS",
+    "DASHBOARD_API_BASE_URL",
+    "DASHBOARD_BASE_URL",
+    "DASHBOARD_JWT_SECRET",
+    "GITHUB_APP_CLIENT_ID",
+    "GITHUB_APP_CLIENT_SECRET",
+    "TOKEN_ENCRYPTION_KEY",
+}
+values = dotenv_values(".env")
+missing = sorted(key for key in required if not values.get(key))
+raise SystemExit(f"missing values: {', '.join(missing)}" if missing else "env-ready")
+PY
 ```
 
-Expected: **none of the B2 checklist vars appear.** Optional-feature vars may
-remain empty (SLACK_*, EXA_API_KEY, GOOGLE_API_KEY, LangSmith project ids,
-DEFAULT_SANDBOX_* snapshot vars, PUBLIC_REPO_ORG_GATE, and similar — all gate
-features this deployment doesn't use).
+Expected: `env-ready`. Also confirm `ui/.env` contains the production
+`VITE_DASHBOARD_API_BASE_URL` value.
 
-### B3. Sandbox image
+### B3. Build the sandbox image
 
 ```bash
+cd /home/openswe/open-swe
 docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker
+docker image inspect openswe-sandbox:dev >/dev/null && echo image-present
 ```
 
-**Verify:** `docker image inspect openswe-sandbox:dev >/dev/null && echo image-present`
+Expected: `image-present`.
 
-### B4. Tunnel (per machine)
-
-OPERATIONS.md § Webhook tunnel → Per-machine setup: `cloudflared tunnel login`
-against the `speedbay.com` zone, then create your **own hostname** (e.g.
-`openswe-<you>.speedbay.com`).
-
-> **Multi-operator rule (OPE-36).** With one stack per laptop, every Linear
-> webhook fires to every registered URL. Before registering your webhook
-> (B5), set `OPENSWE_TRIGGER_OWNER_EMAILS="<your-work-email>"` in `.env` —
-> your instance then acts only on *your* `@openswe` comments, so one mention
-> triggers exactly one backend. Every operator instance must be scoped; an
-> unscoped instance accepts everyone's triggers and reintroduces duplicates.
-> Trade-off: if your laptop is asleep, your trigger doesn't run — no other
-> instance picks it up.
-
-**Verify:** `ls ~/.cloudflared/cert.pem ~/.cloudflared/*.json`
-
-### B5. Linear webhooks (once per hostname)
-
-The existing webhooks point at the first operator's hostname. Each additional
-operator registers their own set (same teams, **their** hostname) with
-`speedbay/create_linear_webhook.py` and a temporary admin key (OPERATIONS.md
-§ Linear trigger — UI-created webhooks never verify; API-created ones with
-our shared `LINEAR_WEBHOOK_SECRET` do). Only do this **after** B4's owner
-scope is set.
-
-**Verify:** covered by the end-to-end smoke run in B8 — and confirm a
-teammate's mention does *not* start a run on your instance (log line:
-"comment author outside this instance's owner scope").
-
-### B6. Boot
+### B4. Build the dashboard
 
 ```bash
-speedbay/openswe start     # backend + tunnel; fails fast on docker/image/health problems
+cd /home/openswe/open-swe/ui
+pnpm install --frozen-lockfile
+pnpm build
 ```
 
-Runs `langgraph dev` with `--no-reload` (the watcher otherwise reloads on the
-runtime's own `.langgraph_api/` persistence flushes until it dies). After any
-merged code change: `speedbay/openswe stop && speedbay/openswe start`.
+**Verify:** `test -f .output/public/_shell.html && echo dashboard-built` prints
+`dashboard-built`.
 
-**Verify:** `speedbay/openswe status` → backend + tunnel PIDs, both health
-checks `200`.
+### B5. Install and enable host services
 
-### B7. Dashboard
+Install the checked-in unit files as symlinks, then enable the backend, shared
+tunnel, dashboard, and prune timer:
 
 ```bash
-cd ui && pnpm install && pnpm dev &        # http://localhost:3000
+cd /home/openswe/open-swe
+sudo ln -sfn "$PWD/speedbay/deploy/openswe-backend.service" /etc/systemd/system/openswe-backend.service
+sudo ln -sfn "$PWD/speedbay/deploy/openswe-tunnel.service" /etc/systemd/system/openswe-tunnel.service
+sudo ln -sfn "$PWD/speedbay/deploy/openswe-dashboard.service" /etc/systemd/system/openswe-dashboard.service
+sudo ln -sfn "$PWD/speedbay/deploy/openswe-prune.service" /etc/systemd/system/openswe-prune.service
+sudo ln -sfn "$PWD/speedbay/deploy/openswe-prune.timer" /etc/systemd/system/openswe-prune.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now openswe-backend.service openswe-tunnel.service openswe-dashboard.service openswe-prune.timer
 ```
 
-Log in via GitHub (OPERATIONS.md § Dashboard). Set your defaults under
-**Open SWE Agent** settings (model, default repository; leave Base Branch and
-Branch Prefix empty — a prefix breaks the issue-keyed branch convention the
-PR-standards gate enforces). Seed teammate mappings (Path A step 3).
+Webhooks target the shared `https://openswe.speedbay.com` hostname; members do
+not register their own. Only when a new **private** Linear team is created, run
+this once from `/home/openswe/open-swe` with the new team's key and a temporary
+workspace-admin key exported as `LINEAR_ADMIN_KEY`, then revoke the admin key:
 
-**Verify:** `curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:2024/dashboard/api/auth/login?redirect_to=%2Fagents"` → `302`
-(500 means an env var from B2 is missing — the real error is in
-`/tmp/openswe-backend.log`), and `http://localhost:3000/login` completes the
-GitHub round-trip to `/agents`.
+```bash
+LINEAR_TEAM_KEY="OPE"
+speedbay/create_linear_webhook.py --create --team "$LINEAR_TEAM_KEY"
+```
+
+### B6. Operate systemd services
+
+```bash
+systemctl status openswe-backend.service openswe-tunnel.service openswe-dashboard.service
+sudo systemctl restart openswe-backend.service openswe-tunnel.service openswe-dashboard.service
+journalctl -u openswe-backend.service -u openswe-tunnel.service -u openswe-dashboard.service
+speedbay/openswe status
+```
+
+Use `systemctl` for start, stop, restart, and boot supervision. Use
+`speedbay/openswe status` only for deployment health and sandbox status; do not
+mix its `start` or `stop` commands with systemd. Process output is in
+`/tmp/openswe-backend.log` and `/tmp/openswe-tunnel.log`; supervisor and Caddy
+output is in the journal.
+
+### B7. Upgrade the deployment
+
+```bash
+cd /home/openswe/open-swe
+git pull --ff-only
+uv sync
+cd ui && pnpm build
+sudo systemctl restart openswe-backend.service openswe-tunnel.service openswe-dashboard.service
+```
+
+Then run the B6 status command and confirm all three services are active. If
+`pnpm-lock.yaml` changed, run `pnpm install --frozen-lockfile` before
+`pnpm build`.
 
 ### B8. Smoke run (end to end)
 
-Pick a genuinely small, docs-only ticket in Linear (or file one), comment the
-trigger mention from your personal account, and watch:
+Pick a genuinely small docs-only Linear ticket, comment the trigger mention
+from a personal account, and observe:
 
-1. Thread appears in the dashboard sidebar within seconds.
-2. Run completes; PR opens **ready-for-review** with a `Closes <TICKET>` body
-   that passes the hygiene gate.
-3. Cost appears at `http://localhost:3000/usage`.
+1. The thread appears at <https://openswe-dash.speedbay.com> within seconds.
+2. The run completes and its PR opens ready for review with a
+   `Closes <TICKET>` body that passes the hygiene gate.
+3. Cost appears under <https://openswe-dash.speedbay.com/usage>.
 4. On merge, Linear moves the ticket to `ready-for-verify`.
 
-**Verify:** all four observed. That is the deployment working with full
-reliability; anything less, start at `/tmp/openswe-backend.log`.
+**Verify:** all four outcomes are observed.
 
 ---
 
@@ -186,9 +253,10 @@ reliability; anything less, start at `/tmp/openswe-backend.log`.
 
 | Symptom | First look |
 |---|---|
-| Login button 404s on :3000 | `ui/.env` missing `VITE_DASHBOARD_API_BASE_URL` |
-| `auth/login` 500 | empty checklist var — exact mapping in OPERATIONS.md § Login env checklist |
-| Callback 400 `unknown error` | `TOKEN_ENCRYPTION_KEY` empty/invalid (`EncryptionKeyMissingError` in the log) |
-| `ERR_CONNECTION_REFUSED` on :2024 | backend down — `speedbay/openswe status`, then the log |
-| Run never starts from a Linear comment | posted by a bot/API key (guard drops it), or webhook missing for a new private team (B5) |
-| Anything else | `/tmp/openswe-backend.log`, then OPERATIONS.md § Known issues |
+| Dashboard login button returns 404 | `ui/.env` missing the production `VITE_DASHBOARD_API_BASE_URL`; rebuild with B4 |
+| `auth/login` returns 500 | Empty checklist variable; inspect `journalctl -u openswe-backend.service` and `/tmp/openswe-backend.log` |
+| Callback returns 400 `unknown error` | `TOKEN_ENCRYPTION_KEY` empty or invalid (`EncryptionKeyMissingError` in the backend log) |
+| Public health is unavailable | `systemctl status openswe-backend.service openswe-tunnel.service`, then their journal and `/tmp` logs |
+| Run never starts from a Linear comment | Bot/API author was dropped, or a newly created private team needs the one-time B5 webhook command |
+| Dashboard is unavailable | `systemctl status openswe-dashboard.service` and `journalctl -u openswe-dashboard.service` |
+| Anything else | `journalctl` for the three services, `/tmp/openswe-backend.log`, then OPERATIONS.md § Known issues |
