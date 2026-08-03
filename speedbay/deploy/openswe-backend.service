@@ -1,0 +1,16 @@
+[Unit]
+Description=Open SWE backend
+Requires=docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+User=openswe
+WorkingDirectory=/home/openswe/open-swe
+ExecStart=/home/openswe/open-swe/speedbay/run-dev.sh
+Restart=always
+StandardOutput=append:/tmp/openswe-backend.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

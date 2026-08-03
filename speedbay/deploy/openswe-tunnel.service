@@ -1,0 +1,14 @@
+[Unit]
+Description=Open SWE Cloudflare tunnel
+After=network-online.target
+
+[Service]
+Type=simple
+User=openswe
+ExecStart=cloudflared tunnel --config /home/openswe/open-swe/speedbay/deploy/tunnel-config.yml run openswe
+Restart=always
+StandardOutput=append:/tmp/openswe-tunnel.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target
