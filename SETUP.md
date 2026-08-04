@@ -92,6 +92,8 @@ onboarding.
 - Docker daemon, `git`, [`uv`](https://docs.astral.sh/uv/), Node 22+,
   `cloudflared`, and Caddy
 - pnpm enabled once through Node's Corepack: `corepack enable pnpm`
+- A read-only `speedbay/open-swe` deploy key registered in GitHub and available
+  through the operations password manager
 - Speed Bay GitHub App credentials and Cloudflare named-tunnel credentials
   available through the operations password manager
 
@@ -100,6 +102,16 @@ onboarding.
 ```bash
 docker info >/dev/null && git --version && uv --version && node -v
 pnpm --version && cloudflared --version && caddy version
+```
+
+Install the read-only deploy key for the `openswe` account, replacing the source
+placeholder below, then verify that it can read the private repository:
+
+```bash
+sudo install -d -o openswe -g openswe -m 700 /home/openswe/.ssh
+sudo install -o openswe -g openswe -m 600 /path/to/open-swe-deploy-key /home/openswe/.ssh/id_ed25519
+sudo -Hu openswe sh -c 'ssh-keyscan -H github.com > ~/.ssh/known_hosts'
+sudo -u openswe git ls-remote git@github.com:speedbay/open-swe.git HEAD
 ```
 
 Install the named-tunnel credential from the operations password manager at the
@@ -118,7 +130,7 @@ The systemd units use this exact checkout path:
 
 ```bash
 cd /home/openswe
-git clone https://github.com/speedbay/open-swe.git
+git clone git@github.com:speedbay/open-swe.git
 cd /home/openswe/open-swe
 uv sync
 ```
