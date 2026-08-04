@@ -136,10 +136,8 @@ sudo -u openswe test -r /home/openswe/.cloudflared/66d09a43-7dac-4001-9adb-b6df1
 The systemd units use this exact checkout path:
 
 ```bash
-cd /home/openswe
-git clone git@github.com:speedbay/open-swe.git
-cd /home/openswe/open-swe
-uv sync
+sudo -Hu openswe git clone git@github.com:speedbay/open-swe.git /home/openswe/open-swe
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && uv sync'
 ```
 
 Populate `/home/openswe/open-swe/.env` from `docs/INSTALLATION.md` §6, then
