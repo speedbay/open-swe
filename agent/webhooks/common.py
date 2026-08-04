@@ -735,6 +735,14 @@ async def upsert_agent_thread_owner_metadata(
     """
     now_ms = int(datetime.now(UTC).timestamp() * 1000)
     resolved_login = github_login or await resolve_login_from_email_async(user_email) or ""
+    # SPEEDBAY DEVIATION (OPE-84): Surface owner attribution the dashboard cannot list.
+    if not resolved_login:
+        logger.warning(
+            "Thread owner has no dashboard identity: thread_id=%s source=%s user_email=%s",
+            thread_id,
+            source,
+            user_email,
+        )
     metadata: dict[str, Any] = {"source": source, "updated_at_ms": now_ms}
     if isinstance(repo_config, dict) and repo_config.get("owner") and repo_config.get("name"):
         metadata["repo"] = repo_config
