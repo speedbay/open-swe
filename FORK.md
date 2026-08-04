@@ -60,6 +60,20 @@ Never edit upstream logic in place — register, don't modify.
 `pyproject.toml`. Keep such edits to a single minimal line and expect to
 re-apply them on merge.
 
+## Judgment standards delivery (no fork middleware)
+
+Speed Bay's judgment-based engineering standards (code style, design-it-twice,
+seams/testing, deletion test, accessibility) are **AGENTS.md curation in the
+target repo**, not fork code. Warehouse keeps them in its root `AGENTS.md`
+("Engineering standards (judgment)") and UI-scoped `baydoor/AGENTS.md` /
+`baypress/AGENTS.md` (OPE-17). Delivery is the existing upstream machinery:
+the implementer prompt mandates reading repo-root `AGENTS.md` after clone,
+`SubdirAgentsReadMiddleware` (`agent/middleware/subdir_agents.py`) appends
+applicable ancestor `AGENTS.md` files to `read_file` results, and
+`agent/utils/agents_md.py` inlines root + directory-scoped files into reviewer
+prompts. Do not add fork middleware to deliver conventions — put them in the
+target repo's `AGENTS.md` at the scope where they apply.
+
 ## Upstream deviations (re-check after every merge)
 
 The upstream-owned files below carry edits. Each is marked in-code with
