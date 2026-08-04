@@ -6,9 +6,9 @@ zero-to-running onboarding path lives in [`SETUP.md`](SETUP.md).
 
 ## Webhook tunnel
 
-The backend runs on a laptop, so inbound webhooks arrive through a **named
-Cloudflare Tunnel** on the `speedbay.com` zone. This is the canonical URL for
-the GitHub App (OPE-3) and the Linear trigger (OPE-5):
+The backend runs on the always-on Azure host, and inbound webhooks arrive
+through a **named Cloudflare Tunnel** on the `speedbay.com` zone. This is the
+canonical URL for the GitHub App (OPE-3) and the Linear trigger (OPE-5):
 
 | | |
 |---|---|
@@ -17,7 +17,10 @@ the GitHub App (OPE-3) and the Linear trigger (OPE-5):
 | Tunnel name / id | `openswe` / `66d09a43-7dac-4001-9adb-b6df1806796d` |
 | Local target | `http://localhost:2024` |
 
-Start it alongside `langgraph dev` (separate terminal):
+The host runs the tunnel through `openswe-tunnel.service`; use
+`systemctl status openswe-tunnel.service` and
+`journalctl -u openswe-tunnel.service` to inspect it. For a supported manual
+development instance, start it alongside `langgraph dev` in a separate terminal:
 
 ```bash
 cloudflared tunnel run --url http://localhost:2024 openswe
@@ -36,11 +39,14 @@ never need editing.
 
 ### Per-machine setup
 
-`cloudflared tunnel login` writes `~/.cloudflared/cert.pem`, and
-`tunnel create` writes `~/.cloudflared/<UUID>.json`. **Both are secrets and
-neither is committed.** A second dev runs `cloudflared tunnel login` against the
-`speedbay.com` zone and either reuses this tunnel (copy its credentials file via
-a password manager) or creates their own with a distinct hostname.
+The live tunnel credentials are stored only on the Azure host; member laptops
+need no `cloudflared` installation or credentials. `cloudflared tunnel login`
+writes `~/.cloudflared/cert.pem`, and `tunnel create` writes
+`~/.cloudflared/<UUID>.json`. **Both are secrets and neither is committed.**
+For a supported laptop-hosted development instance, an operator runs
+`cloudflared tunnel login` against the `speedbay.com` zone and either reuses the
+tunnel (copy its credentials file via a password manager) or creates one with a
+distinct hostname.
 
 If a freshly created hostname fails to resolve locally while working fine from
 `dig @1.1.1.1`, the local resolver cached an NXDOMAIN from a pre-creation
@@ -48,17 +54,17 @@ lookup: `sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder`.
 
 ### Unattended operation
 
-With the Docker backend (OPE-7) live, agent commands run in per-run containers:
-no host filesystem, host env, or host credentials are reachable (negative-proof
-test in `tests/speedbay/test_docker_sandbox.py`). The blanket prohibition on
+The Azure host is designed for unattended operation. With the Docker backend
+(OPE-7) live, agent commands run in per-run containers: no host filesystem,
+host env, or host credentials are reachable (negative-proof test in
+`tests/speedbay/test_docker_sandbox.py`). The blanket prohibition on
 `cloudflared service install` is therefore lifted **conditionally**: an
 always-on tunnel is acceptable only while `SANDBOX_TYPE=docker` — revert to
 start/stop-per-session if the backend is ever switched back to `local`. What
 still runs on the host regardless: the backend process itself, webhook
-handling, and token minting. Keep those in mind before leaving the machine
-unattended for long periods; the remaining laptop-phase risks are cost
-(bounded by § Spend limits) and PR volume, both bounded per-run by
-human review before merge.
+handling, and token minting. Account for those host processes during
+maintenance; the remaining unattended-host risks are cost (bounded by § Spend
+limits) and PR volume, both bounded per-run by human review before merge.
 
 ### Why Cloudflare rather than ngrok
 
@@ -278,13 +284,14 @@ night to learn:
   account or the synthetic-delivery scripts. The conventions middleware also
   instructs the agent never to write `@openswe` in Linear comments
   (belt-and-braces).
-- **Multi-laptop deployments scope triggers per instance (OPE-36).** Linear
-  webhooks fan out to every registered URL, so with one stack per dev a
-  single mention would start duplicate runs. Each instance sets
-  `OPENSWE_TRIGGER_OWNER_EMAILS="<owner-email>"` and drops comments authored
-  by anyone else (case-insensitive, comma-separated list; fail-closed when a
-  scoped payload has no author email). Unset means unscoped — the
-  single-instance deployment keeps accepting every human mention.
+- **The shared instance runs unscoped.** `OPENSWE_TRIGGER_OWNER_EMAILS` is
+  unset on the Azure host, so the single deployment accepts every human
+  mention. The mechanism remains available for a future multi-instance phase:
+  Linear webhooks fan out to every registered URL, so each instance would set
+  `OPENSWE_TRIGGER_OWNER_EMAILS="<owner-email>"` and drop comments authored by
+  anyone else (case-insensitive, comma-separated list; fail-closed when a
+  scoped payload has no author email). See OPE-36 for the supported
+  multi-laptop design.
 - The runtime `LINEAR_API_KEY` is a swe-service-bot service-account key: agent
   comments on tickets are attributed to `swe-service-bot@speedbay.com`, and the key
   is revocable without touching anyone's personal access.
@@ -318,20 +325,24 @@ with `sudo systemctl enable --now openswe-prune.timer`. Check its status with
 ### On the Azure host (systemd)
 
 Install the deployment units as symlinks so a checkout update changes the source files in place,
-then enable and start both processes and the prune timer:
+then enable and start all three processes and the prune timer:
 
 ```bash
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-backend.service /etc/systemd/system/openswe-backend.service
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-tunnel.service /etc/systemd/system/openswe-tunnel.service
+sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-dashboard.service /etc/systemd/system/openswe-dashboard.service
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-prune.service /etc/systemd/system/openswe-prune.service
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-prune.timer /etc/systemd/system/openswe-prune.timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now openswe-backend.service openswe-tunnel.service openswe-prune.timer
+sudo systemctl enable --now openswe-backend.service openswe-tunnel.service openswe-dashboard.service openswe-prune.timer
 ```
 
-Use `systemctl status openswe-backend.service openswe-tunnel.service` for current state and
-`journalctl -u openswe-backend.service -u openswe-tunnel.service` for supervisor events. Process
-output remains in `/tmp/openswe-backend.log` and `/tmp/openswe-tunnel.log`. Do not mix
+Use
+`systemctl status openswe-backend.service openswe-tunnel.service openswe-dashboard.service`
+for current state and
+`journalctl -u openswe-backend.service -u openswe-tunnel.service -u openswe-dashboard.service`
+for supervisor events. Backend and tunnel process output remains in
+`/tmp/openswe-backend.log` and `/tmp/openswe-tunnel.log`. Do not mix
 `speedbay/openswe start` or `stop` with the units: `start` only refuses duplicates rather than
 coordinating with systemd, and `stop` would make systemd restart the processes. Keep
 `speedbay/openswe status` as the operator health and sandbox-status tool.
