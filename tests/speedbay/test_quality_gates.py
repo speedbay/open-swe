@@ -94,6 +94,22 @@ def test_touched_projects_maps_paths_to_configured_roots(demo_gates) -> None:
     assert result == {"demo": ["app/x.py", "README.md"]}
 
 
+def test_baydoor_build_gates_use_ci_placeholder_environment() -> None:
+    gates = {gate.name: gate.command for gate in qg.PROJECT_QUALITY_GATES["baydoor"]}
+    placeholder_names = {
+        "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+        "DATABRICKS_CLIENT_ID",
+        "LAKEBASE_ENDPOINT",
+        "PGDATABASE",
+        "PGHOST",
+    }
+
+    for gate_name in ("build", "frontend render check"):
+        assert all(f"{name}=" in gates[gate_name] for name in placeholder_names)
+    for gate_name in ("install dependencies", "eslint", "test", "typecheck"):
+        assert not any(f"{name}=" in gates[gate_name] for name in placeholder_names)
+
+
 def test_every_configured_project_gate_fires() -> None:
     """Each real project's every gate dispatches when its paths are touched.
 
