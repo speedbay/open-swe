@@ -97,10 +97,17 @@ onboarding.
 - Speed Bay GitHub App credentials and Cloudflare named-tunnel credentials
   available through the operations password manager
 
+Grant the dedicated service account Docker access so the backend and prune units
+can use the daemon:
+
+```bash
+sudo usermod -aG docker openswe
+```
+
 **Verify:**
 
 ```bash
-docker info >/dev/null && git --version && uv --version && node -v
+sudo -u openswe docker info >/dev/null && git --version && uv --version && node -v
 pnpm --version && cloudflared --version && caddy version
 ```
 
