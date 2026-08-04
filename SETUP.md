@@ -37,7 +37,7 @@ upstream GitHub App and environment mechanics live in
 
    async def main():
        now = datetime.now(UTC).isoformat()
-       login = os.environ["GITHUB_LOGIN"]
+       login = os.environ["GITHUB_LOGIN"].strip().lower()
        email = os.environ["WORK_EMAIL"]
        client = get_client(url="http://127.0.0.1:2024")
        await client.store.put_item(
