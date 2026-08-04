@@ -102,6 +102,16 @@ docker info >/dev/null && git --version && uv --version && node -v
 pnpm --version && cloudflared --version && caddy version
 ```
 
+Install the named-tunnel credential from the operations password manager at the
+exact path referenced by `speedbay/deploy/tunnel-config.yml`, replacing the
+source placeholder below:
+
+```bash
+sudo install -d -o openswe -g openswe -m 700 /home/openswe/.cloudflared
+sudo install -o openswe -g openswe -m 600 /path/to/66d09a43-7dac-4001-9adb-b6df1806796d.json /home/openswe/.cloudflared/66d09a43-7dac-4001-9adb-b6df1806796d.json
+sudo -u openswe test -r /home/openswe/.cloudflared/66d09a43-7dac-4001-9adb-b6df1806796d.json
+```
+
 ### B2. Clone and populate host environment
 
 The systemd units use this exact checkout path:
@@ -228,7 +238,9 @@ output is in the journal.
 cd /home/openswe/open-swe
 git pull --ff-only
 uv sync
+docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker
 cd ui && pnpm install --frozen-lockfile && pnpm build
+sudo systemctl daemon-reload
 sudo systemctl restart openswe-backend.service openswe-tunnel.service openswe-dashboard.service
 ```
 
