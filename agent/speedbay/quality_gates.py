@@ -91,10 +91,20 @@ PROJECT_QUALITY_GATES: dict[str, tuple[GateCommand, ...]] = {
         GateCommand("eslint", "npm run lint"),
         GateCommand("test", "npm run test"),
         GateCommand("typecheck", "npm run typecheck"),
-        GateCommand("build", "npm run --if-present build"),
+        # Keep these non-secret placeholders in sync with warehouse .github/workflows/ci.yml.
+        GateCommand(
+            "build",
+            "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_Y2xlcmsuZXhhbXBsZS5jb20k "
+            "DATABRICKS_CLIENT_ID=ci-placeholder "
+            "LAKEBASE_ENDPOINT=projects/ci/branches/main/endpoints/placeholder "
+            "PGDATABASE=ci_placeholder PGHOST=localhost npm run --if-present build",
+        ),
         GateCommand(
             "frontend render check",
-            "npm run render:check",
+            "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_Y2xlcmsuZXhhbXBsZS5jb20k "
+            "DATABRICKS_CLIENT_ID=ci-placeholder "
+            "LAKEBASE_ENDPOINT=projects/ci/branches/main/endpoints/placeholder "
+            "PGDATABASE=ci_placeholder PGHOST=localhost npm run render:check",
             paths=(
                 "app/**",
                 "components/**",
