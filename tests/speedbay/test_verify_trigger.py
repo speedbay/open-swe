@@ -300,6 +300,28 @@ def test_dispatch_builds_verify_prompt_on_distinct_thread():
     assert "Never defer. Evidence missing now means `incomplete` now." in prompt
     assert "never call `schedule_thread_wakeup`" in prompt
     assert "gh pr diff" in prompt
+    assert "The only requirements\n   that bear on the verdict" in prompt
+    assert "it never creates an additional criterion" in prompt
+    assert (
+        "target repository and working\n   directory, platform, setup/environment, and expected result"
+        in prompt
+    )
+    assert "acceptance criterion remains mandatory" in prompt
+    assert "mark that criterion missing and name the absent declaration" in prompt
+    assert "observed\n   versus expected result" in prompt
+    assert "an expected\n   nonzero exit that occurs as declared satisfies the criterion" in prompt
+    assert "GitHub Actions declarations use PR-head evidence." in prompt
+    assert (
+        "matching check at the\n     PR head SHA and record its SHA, status, and conclusion"
+        in prompt
+    )
+    assert "Routed-repository sandbox declarations use the merge SHA." in prompt
+    assert "supporting command omits context or targets another repository" in prompt
+    assert "without changing an otherwise-supported verdict" in prompt
+    assert "OPE-94: PR #66's historical warehouse `npm run render:check`" in prompt
+    assert "do not run it from the routed open-swe root" in prompt
+    assert "OPE-88: PR #909 declared GitHub Actions CI the arbiter" in prompt
+    assert "do not rerun the command\n     as root on another platform" in prompt
     # OPE-52: the verifier writes checkbox results back to the issue body —
     # satisfied criteria `[ ]` → `[x]`, body otherwise byte-identical, and the
     # verdict is posted even if the description edit fails.

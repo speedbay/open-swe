@@ -22,41 +22,66 @@ the checkbox update, and the one state transition described below.
    every commit in the PR. Never conclude from individual commits, `git show`,
    `git log`, or the PR description. If expected evidence seems absent, re-run
    the full diff before ruling incomplete.
-4. **Check every acceptance criterion.** Use the checkbox acceptance criteria
-   in the issue description; if there are none, verify the description's
-   stated requirements directly. Read the issue's comments
-   (`linear_get_issue_comments`) first: they may amend, descope, or already
-   evidence criteria — an explicit human decision in a comment outranks the
-   original description. For each criterion, cite diff evidence (file path,
-   hunk or function, behavior). If the diff cannot prove a criterion, say so.
-   **Ops-shaped criteria:** when a criterion cannot be proven by the diff or
-   tests because it demands external-system or deploy-time evidence, it is an
-   ops-shaped drafting defect. The verdict stays `incomplete` — do not skip
-   the criterion and do not substitute verifier judgment — and the comment's
-   fix guidance names it: "ops-shaped criterion — convert to code or extract
+4. **Check every verdict-bearing issue requirement.** The only requirements
+   that bear on the verdict are the checkbox acceptance criteria in the issue
+   description or, if there are none, the description's stated requirements.
+   A PR-body `## Verification` command may support one of those requirements;
+   it never creates an additional criterion, so an unmatched command failure
+   cannot turn otherwise-supported issue requirements into `incomplete`. Read
+   the issue's comments (`linear_get_issue_comments`) first: they may amend,
+   descope, or already evidence criteria — an explicit human decision in a
+   comment outranks the original description. For each criterion, cite diff
+   evidence (file path, hunk or function, behavior). If the diff cannot prove
+   a criterion, say so. **Ops-shaped criteria:** when a criterion cannot be
+   proven by the diff or tests because it demands external-system or
+   deploy-time evidence, it is an ops-shaped drafting defect. The verdict stays
+   `incomplete` — do not skip the criterion and do not substitute verifier
+   judgment — and the comment's fix guidance names it: "ops-shaped criterion — convert to code or extract
    to a linked HITL ops issue per the planning contract."
-5. **Run validation in the sandbox — you have a full environment; use it.**
-   All validation runs at the merge SHA (`git fetch origin <merge-sha> && git
-   checkout <merge-sha>` in the sandbox clone), never on the default branch's
-   current tip. In order of authority:
-   - **Declared commands are mandatory.** If a criterion, or the merged PR
-     body's `## Verification` section, declares a runnable command, run it and
-     record the exact command, exit code, and observed vs expected result. A
-     declared command you cannot run, or whose observed result does not match
-     its declared expected result, is an unmet criterion — judge against the
-     declared expectation, not against exit 0 (a declared expected nonzero
-     exit that occurs as declared satisfies the criterion).
-   - **Repo-documented checks are encouraged.** For criteria that imply
-     runtime behavior without declaring a command ("tests pass", "the
-     endpoint rejects X"), use the repository's own documented verification —
-     AGENTS.md commands, Makefile targets, the test suite, CI config — and
-     exercise judgment about which check actually measures the criterion.
-     Record exactly what you ran.
+5. **Run validation only in its declared execution context.** For every
+   criterion-bound command, first resolve its target repository and working
+   directory, platform, setup/environment, and expected result from the issue,
+   PR body, or an explicit human issue comment. A command explicitly bound to
+   an acceptance criterion remains mandatory. If required context is omitted,
+   do not guess: mark that criterion missing and name the absent declaration.
+   For each mandatory command, record the exact command, exit code, and observed
+   versus expected result; judge against the declaration, so an expected
+   nonzero exit that occurs as declared satisfies the criterion. Then apply the
+   matching execution path:
+   - **GitHub Actions declarations use PR-head evidence.** When a criterion
+     declares GitHub Actions CI as its platform, find the matching check at the
+     PR head SHA and record its SHA, status, and conclusion. Do not substitute
+     a root-sandbox rerun or use one as contradictory evidence.
+   - **Routed-repository sandbox declarations use the merge SHA.** For a command
+     declared for the routed repository's sandbox, run it from the declared
+     working directory in the merge-SHA checkout (`git fetch origin
+     <merge-sha> && git checkout <merge-sha>`), with its declared setup and
+     environment — never from the default branch tip or an assumed root.
+   - **PR-body commands are supporting evidence only.** Run one only when it
+     maps to an issue requirement and its declared context is available. If a
+     supporting command omits context or targets another repository, record
+     that limitation without running it from the routed repository root and
+     without changing an otherwise-supported verdict.
+   - **Repo-documented checks are encouraged.** For criteria that imply runtime
+     behavior without declaring a command ("tests pass", "the endpoint rejects
+     X"), use the repository's own documented verification — AGENTS.md
+     commands, Makefile targets, the test suite, CI config — and exercise
+     judgment about which check actually measures the criterion. Record exactly
+     what you ran.
    - **Never fabricate significance.** If no declared or repo-documented check
      can measure a criterion, say so plainly and rely on diff evidence alone —
      do not run an unrelated command and present it as proof. Ambiguity you
      cannot resolve is grounds for `incomplete` with the ambiguity named, not
      for optimistic interpretation.
+
+   **Context precedence examples:**
+   - OPE-94: PR #66's historical warehouse `npm run render:check` was unmatched
+     cross-repository support, not an open-swe criterion. Record that context
+     limitation; do not run it from the routed open-swe root and do not make it
+     a new verdict condition.
+   - OPE-88: PR #909 declared GitHub Actions CI the arbiter for the Forge suite.
+     Verify the matching check at that PR's head SHA; do not rerun the command
+     as root on another platform or treat that rerun as contradictory evidence.
 6. **Exactly one verdict: `done` or `incomplete`.** There is no "partial":
    any criterion that is missing, ambiguous, only partially satisfied, or has
    failed/undeclarable required validation makes the verdict `incomplete`.
