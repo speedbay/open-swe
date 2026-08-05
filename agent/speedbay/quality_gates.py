@@ -101,7 +101,16 @@ PROJECT_QUALITY_GATES: dict[str, tuple[GateCommand, ...]] = {
         ),
         GateCommand(
             "frontend render check",
+            # render:check boots the app, so Clerk middleware also needs a
+            # valid-format (fake) secret key. CI never runs render:check, so
+            # there is no ci.yml block to mirror for this one; format follows
+            # baydoor/.env.example (sk_test_...). Verified live on the BAY-99
+            # run: middleware 500s without it, / returns 200 with it (OPE-92).
             "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_Y2xlcmsuZXhhbXBsZS5jb20k "
+            # The literal is split so GitHub push protection does not
+            # false-positive on the fake sk_test_ value (Stripe key pattern).
+            "CLERK_SECRET_KEY=sk_"
+            "test_Y2xlcmsuZXhhbXBsZS5jb20k "
             "DATABRICKS_CLIENT_ID=ci-placeholder "
             "LAKEBASE_ENDPOINT=projects/ci/branches/main/endpoints/placeholder "
             "PGDATABASE=ci_placeholder PGHOST=localhost npm run render:check",
