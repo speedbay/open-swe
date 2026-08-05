@@ -55,6 +55,13 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
   && apt-get install -y --no-install-recommends nodejs \
   && rm -rf /var/lib/apt/lists/*
 
+# Playwright Chromium OS libraries for the baydoor "frontend render check"
+# quality gate (OPE-94): the project's `npm ci` downloads the browser binary
+# into the container, but launching it needs these system packages. Keep the
+# playwright version in sync with warehouse baydoor/package.json.
+RUN npx --yes playwright@1.61.1 install-deps chromium \
+  && rm -rf /var/lib/apt/lists/*
+
 # uv/uvx for python project workflows (sandcastle parity).
 RUN curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 

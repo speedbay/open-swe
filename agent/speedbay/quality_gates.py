@@ -101,16 +101,23 @@ PROJECT_QUALITY_GATES: dict[str, tuple[GateCommand, ...]] = {
         ),
         GateCommand(
             "frontend render check",
-            # render:check boots the app, so Clerk middleware also needs a
-            # valid-format (fake) secret key. CI never runs render:check, so
-            # there is no ci.yml block to mirror for this one; format follows
-            # baydoor/.env.example (sk_test_...). Verified live on the BAY-99
-            # run: middleware 500s without it, / returns 200 with it (OPE-92).
-            "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_Y2xlcmsuZXhhbXBsZS5jb20k "
+            # render:check boots the app and drives a real browser, so Clerk
+            # needs valid-format fake keys. CI never runs render:check, so
+            # there is no ci.yml block to mirror for this one. The keys are
+            # pk_live_/sk_live_, deliberately diverging from the build gate's
+            # pk_test_ (kept in sync with warehouse ci.yml): a pk_test_ key
+            # makes Clerk a development instance whose middleware
+            # 307-redirects every browser document request to the
+            # unresolvable clerk.example.com handshake endpoint, failing
+            # page.goto with NAME_NOT_RESOLVED; a production-instance
+            # placeholder skips the handshake and / renders. Verified live in
+            # the BAY-99 run's sandbox container (OPE-94; secret-key need:
+            # OPE-92).
+            "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_Y2xlcmsuZXhhbXBsZS5jb20k "
             # The literal is split so GitHub push protection does not
-            # false-positive on the fake sk_test_ value (Stripe key pattern).
+            # false-positive on the fake secret value (Stripe key pattern).
             "CLERK_SECRET_KEY=sk_"
-            "test_Y2xlcmsuZXhhbXBsZS5jb20k "
+            "live_Y2xlcmsuZXhhbXBsZS5jb20k "
             "DATABRICKS_CLIENT_ID=ci-placeholder "
             "LAKEBASE_ENDPOINT=projects/ci/branches/main/endpoints/placeholder "
             "PGDATABASE=ci_placeholder PGHOST=localhost npm run render:check",

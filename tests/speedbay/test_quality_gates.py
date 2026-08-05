@@ -110,6 +110,15 @@ def test_baydoor_build_gates_use_ci_placeholder_environment() -> None:
     # secret too (OPE-92 follow-up; build proved it does not need one).
     assert "CLERK_SECRET_KEY=" in gates["frontend render check"]
     assert "CLERK_SECRET_KEY=" not in gates["build"]
+    # render:check drives a real browser: pk_test_ selects a Clerk development
+    # instance whose middleware 307-redirects document requests to the
+    # unresolvable clerk.example.com handshake, so the render gate uses
+    # production-instance (pk_live_/sk_live_) placeholders while build stays
+    # pk_test_ in sync with warehouse ci.yml (OPE-94).
+    assert "pk_live_" in gates["frontend render check"]
+    assert "sk_live_" in gates["frontend render check"]
+    assert "pk_test_" in gates["build"]
+    assert "pk_live_" not in gates["build"]
     for gate_name in ("install dependencies", "eslint", "test", "typecheck"):
         assert not any(f"{name}=" in gates[gate_name] for name in placeholder_names)
         assert "CLERK_SECRET_KEY=" not in gates[gate_name]
