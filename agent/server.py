@@ -106,6 +106,9 @@ from .runtime.execution import graph_loaded_for_execution
 from .speedbay.conventions import SpeedbayConventionsMiddleware
 from .speedbay.pr_standards import PRStandardsMiddleware
 from .speedbay.quality_gates import QualityGatesMiddleware
+
+# SPEEDBAY REGISTRATION (review request source gate; see FORK.md).
+from .speedbay.review_request_gate import request_pr_review
 from .tools import (
     approve_plan,
     enter_plan_mode,
@@ -122,7 +125,6 @@ from .tools import (
     open_pull_request,
     recreate_sandbox,
     report_platform_issue,
-    request_pr_review,
     save_plan,
     save_user_instructions,
     schedule_thread_wakeup,
