@@ -28,6 +28,7 @@ import re
 import shlex
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
+from uuid import uuid4
 
 import attrs
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
@@ -398,8 +399,8 @@ async def _changed_paths(backend: Any, base: str, head: str, repo_dir: str) -> l
     return None
 
 
-# Container-tmp prefix for the ephemeral gate worktree; suffixed with the
-# thread id so concurrent threads (one sandbox each) can never collide.
+# Container-tmp prefix for ephemeral gate worktrees. Each path includes the
+# thread id and a UUID so overlapping calls in one sandbox cannot collide.
 _GATE_TREE_PREFIX = "/tmp/gate-"
 
 
@@ -447,10 +448,10 @@ async def _materialize_gate_tree(
       clone — a clean tree at the commit IS that tree, and it keeps the
       agent's installed dependencies for gate commands without an install
       step.
-    - Anything else (drifted or dirty): a detached ephemeral worktree of the
-      commit under ``/tmp``. Never a checkout mutation — git refuses to check
-      out a branch already held by the agent's worktree, and mutating the
-      agent's tree would race its own work.
+    - Anything else (drifted or dirty): a uniquely named detached ephemeral
+      worktree of the commit under ``/tmp``. Never a checkout mutation — git
+      refuses to check out a branch already held by the agent's worktree, and
+      mutating the agent's tree would race its own work.
     - None: the commit cannot be materialized — the caller keeps the gate's
       fail-open contract.
 
@@ -469,14 +470,8 @@ async def _materialize_gate_tree(
     ]
     if getattr(state, "exit_code", None) == 0 and lines == [commit]:
         return repo_dir, False
-    gate_dir = f"{_GATE_TREE_PREFIX}{thread_id}"
+    gate_dir = f"{_GATE_TREE_PREFIX}{thread_id}-{uuid4().hex}"
     quoted_gate = shlex.quote(gate_dir)
-    # Pre-clean a leftover from a crashed prior run, then materialize.
-    await backend.aexecute(
-        f"git -C {quoted_dir} worktree remove --force {quoted_gate} 2>/dev/null; "
-        f"rm -rf {quoted_gate}",
-        timeout=DIFF_TIMEOUT_SECONDS,
-    )
     response = await backend.aexecute(
         f"git -C {quoted_dir} worktree add --detach {quoted_gate} {shlex.quote(commit)}",
         timeout=DIFF_TIMEOUT_SECONDS,

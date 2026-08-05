@@ -14,6 +14,7 @@ import asyncio
 import json
 import shlex
 import subprocess
+from types import SimpleNamespace
 from typing import Any
 
 import attrs
@@ -239,6 +240,7 @@ def _wire(monkeypatch: pytest.MonkeyPatch, backend: FakeBackend) -> None:
     async def fake_get_backend(thread_id: str):
         return backend
 
+    monkeypatch.setattr(qg, "uuid4", lambda: SimpleNamespace(hex="run"))
     monkeypatch.setattr(qg, "get_sandbox_backend", fake_get_backend)
     monkeypatch.setattr(
         qg,
@@ -383,10 +385,23 @@ def test_gates_run_in_head_worktree_when_clone_differs(demo_gates, monkeypatch) 
         == "pr-opened"
     )
     gate = next(c for c in backend.commands if "run-lint" in c)
-    assert gate.startswith("cd /tmp/gate-t-1/demo && ")
-    assert any("worktree add --detach /tmp/gate-t-1 bbb" in c for c in backend.commands)
+    assert gate.startswith("cd /tmp/gate-t-1-run/demo && ")
+    assert any("worktree add --detach /tmp/gate-t-1-run bbb" in c for c in backend.commands)
     after_gate = backend.commands[backend.commands.index(gate) + 1 :]
-    assert any("worktree remove --force /tmp/gate-t-1" in c for c in after_gate)
+    assert any("worktree remove --force /tmp/gate-t-1-run" in c for c in after_gate)
+
+
+def test_gate_worktrees_are_unique_per_invocation(monkeypatch) -> None:
+    """Overlapping calls in one thread receive different worktree paths."""
+    ids = iter(("first", "second"))
+    monkeypatch.setattr(qg, "uuid4", lambda: SimpleNamespace(hex=next(ids)))
+    backend = FakeBackend(_head_script("aaa\n"))
+
+    first = _run(qg._materialize_gate_tree(backend, REPO_DIR, "bbb", "t-1"))
+    second = _run(qg._materialize_gate_tree(backend, REPO_DIR, "bbb", "t-1"))
+
+    assert first == ("/tmp/gate-t-1-first", True)
+    assert second == ("/tmp/gate-t-1-second", True)
 
 
 def test_gates_run_in_place_when_clone_at_head_and_clean(demo_gates, monkeypatch) -> None:
@@ -435,6 +450,7 @@ def test_gates_go_ephemeral_when_clone_at_head_but_dirty(demo_gates, monkeypatch
     monkeypatch.setattr(qg, "get_sandbox_backend", fake_get_backend)
     monkeypatch.setattr(qg, "resolve_repo_dir", fake_resolve_repo_dir)
     monkeypatch.setattr(qg, "_GATE_TREE_PREFIX", gate_prefix)
+    monkeypatch.setattr(qg, "uuid4", lambda: SimpleNamespace(hex="run"))
     monkeypatch.setattr(
         qg,
         "get_config",
@@ -449,7 +465,7 @@ def test_gates_go_ephemeral_when_clone_at_head_but_dirty(demo_gates, monkeypatch
     result = _run(QualityGatesMiddleware().awrap_tool_call(_request(head="feature-x"), _opened))
     assert result == "pr-opened"
     assert observed.read_text() == "committed\n"
-    assert not (tmp_path / "gate-dirty").exists()
+    assert not (tmp_path / "gate-dirty-run").exists()
 
 
 def test_gate_worktree_removed_when_gate_fails(demo_gates, monkeypatch) -> None:
@@ -466,7 +482,7 @@ def test_gate_worktree_removed_when_gate_fails(demo_gates, monkeypatch) -> None:
     assert isinstance(result, ToolMessage)
     gate = next(c for c in backend.commands if "run-lint" in c)
     after_gate = backend.commands[backend.commands.index(gate) + 1 :]
-    assert any("worktree remove --force /tmp/gate-t-1" in c for c in after_gate)
+    assert any("worktree remove --force /tmp/gate-t-1-run" in c for c in after_gate)
 
 
 def test_middleware_fails_open_when_head_unresolvable(demo_gates, monkeypatch, caplog) -> None:
