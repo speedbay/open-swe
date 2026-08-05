@@ -432,44 +432,40 @@ async def _resolve_head_commit(backend: Any, repo_dir: str, head: str) -> str | 
 
 
 async def _materialize_gate_tree(
-    backend: Any, repo_dir: str, head: str, thread_id: str
+    backend: Any, repo_dir: str, commit: str, thread_id: str
 ) -> tuple[str, bool] | None:
-    """Directory holding the requested head's tree, plus whether it is ephemeral.
+    """Directory holding ``commit``'s tree, plus whether it is ephemeral.
 
     The OPE-95 incident: gates ran in whatever ``repo_dir`` had checked out —
     a stale main — while the PR branch lived in the agent's linked worktree,
     so no push could ever change the gate verdict. This helper guarantees the
-    returned directory contains the tree of ``head``:
+    returned directory contains the same resolved commit used for gate
+    selection:
 
-    - ``head == "HEAD"``: the resolved clone as today (no fetch, no worktree).
-    - Clone already at the head commit with a clean ``status --porcelain``:
-      the clone — a clean tree at the head commit IS the head tree, and it
-      keeps the agent's installed dependencies for gate commands without an
-      install step.
+    - ``commit == "HEAD"``: the resolved clone as today (no worktree).
+    - Clone already at the commit with a clean ``status --porcelain``: the
+      clone — a clean tree at the commit IS that tree, and it keeps the
+      agent's installed dependencies for gate commands without an install
+      step.
     - Anything else (drifted or dirty): a detached ephemeral worktree of the
-      head commit under ``/tmp``. Never a checkout mutation — git refuses to
-      check out a branch already held by the agent's worktree, and mutating
-      the agent's tree would race its own work.
-    - None: the head cannot be resolved or materialized — the caller keeps
-      the gate's fail-open contract.
+      commit under ``/tmp``. Never a checkout mutation — git refuses to check
+      out a branch already held by the agent's worktree, and mutating the
+      agent's tree would race its own work.
+    - None: the commit cannot be materialized — the caller keeps the gate's
+      fail-open contract.
 
     Callers must remove an ephemeral tree via ``_remove_gate_tree`` after the
     gate run, pass or fail.
     """
-    if head == "HEAD":
+    if commit == "HEAD":
         return repo_dir, False
-    commit = await _resolve_head_commit(backend, repo_dir, head)
-    if commit is None:
-        return None
     quoted_dir = shlex.quote(repo_dir)
     state = await backend.aexecute(
         f"git -C {quoted_dir} rev-parse HEAD && git -C {quoted_dir} status --porcelain",
         timeout=DIFF_TIMEOUT_SECONDS,
     )
     lines = [
-        line.strip()
-        for line in (getattr(state, "output", "") or "").splitlines()
-        if line.strip()
+        line.strip() for line in (getattr(state, "output", "") or "").splitlines() if line.strip()
     ]
     if getattr(state, "exit_code", None) == 0 and lines == [commit]:
         return repo_dir, False
@@ -612,17 +608,27 @@ class QualityGatesMiddleware(AgentMiddleware):
                     (configurable.get("repo") or {}).get("name"),
                 )
                 return None
-            changed = await _changed_paths(backend, base, head, repo_dir)
+            commit = head
+            if head != "HEAD":
+                commit = await _resolve_head_commit(backend, repo_dir, head)
+                if commit is None:
+                    logger.error(
+                        "quality gates: could not resolve head %r in %r — passing",
+                        head,
+                        repo_dir,
+                    )
+                    return None
+            changed = await _changed_paths(backend, base, commit, repo_dir)
             if changed is None:
                 logger.error(
                     "quality gates: could not diff %r against base %r — passing", repo_dir, base
                 )
                 return None
-            tree = await _materialize_gate_tree(backend, repo_dir, head, str(thread_id))
+            tree = await _materialize_gate_tree(backend, repo_dir, commit, str(thread_id))
             if tree is None:
                 logger.error(
                     "quality gates: could not materialize head %r in %r — passing",
-                    head,
+                    commit,
                     repo_dir,
                 )
                 return None
