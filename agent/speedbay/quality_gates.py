@@ -287,11 +287,13 @@ async def run_quality_gates(
     ``backend`` satisfies the deepagents async sandbox contract
     (``await backend.aexecute(command, timeout=...) -> ExecuteResponse`` —
     the thread-offloading async surface every ``BaseSandbox`` provides).
-    Commands run from the project root under ``repo_dir`` — the resolved repo
-    clone (see ``resolve_repo_dir``), not ``/workspace`` itself: the agent
-    clones into ``/workspace/<repo>``, and ``PROJECT_QUALITY_GATES`` keys are
-    directories inside that clone (OPE-59). Gate commands with ``paths``
-    filters run only when a project-relative changed path matches.
+    Commands run from the project root under ``repo_dir`` — a directory
+    guaranteed by the caller to hold the tree of the PR head being gated:
+    either the resolved repo clone (see ``resolve_repo_dir``) or an ephemeral
+    head worktree (see ``_materialize_gate_tree``, OPE-95) — never
+    ``/workspace`` itself: ``PROJECT_QUALITY_GATES`` keys are directories
+    inside the tree (OPE-59). Gate commands with ``paths`` filters run only
+    when a project-relative changed path matches.
     """
     selected = touched_projects(changed_paths)
     unconfigured = {
@@ -394,6 +396,110 @@ async def _changed_paths(backend: Any, base: str, head: str, repo_dir: str) -> l
         if getattr(response, "exit_code", None) == 0:
             return [line.strip() for line in response.output.splitlines() if line.strip()]
     return None
+
+
+# Container-tmp prefix for the ephemeral gate worktree; suffixed with the
+# thread id so concurrent threads (one sandbox each) can never collide.
+_GATE_TREE_PREFIX = "/tmp/gate-"
+
+
+async def _resolve_head_commit(backend: Any, repo_dir: str, head: str) -> str | None:
+    """Commit hash the requested ``head`` ref points at, or None.
+
+    Fetches ``origin <head>`` best-effort first so a pushed branch is judged
+    at its freshest remote state (the PR's actual content); a repo without a
+    usable ``origin`` (seeded test repos, offline sandboxes) falls back to
+    resolving ``head`` locally. None means the head resolves nowhere — the
+    caller fails open. Refs are shell-quoted: they come from model-controlled
+    tool args.
+    """
+    quoted_dir = shlex.quote(repo_dir)
+    fetch = await backend.aexecute(
+        f"git -C {quoted_dir} fetch origin {shlex.quote(head)}",
+        timeout=DIFF_TIMEOUT_SECONDS,
+    )
+    candidates = ["FETCH_HEAD"] if getattr(fetch, "exit_code", None) == 0 else []
+    candidates.append(head)
+    for ref in candidates:
+        response = await backend.aexecute(
+            f"git -C {quoted_dir} rev-parse --verify {shlex.quote(ref + '^{commit}')}",
+            timeout=DIFF_TIMEOUT_SECONDS,
+        )
+        commit = (getattr(response, "output", "") or "").strip()
+        if getattr(response, "exit_code", None) == 0 and commit:
+            return commit.splitlines()[0].strip()
+    return None
+
+
+async def _materialize_gate_tree(
+    backend: Any, repo_dir: str, head: str, thread_id: str
+) -> tuple[str, bool] | None:
+    """Directory holding the requested head's tree, plus whether it is ephemeral.
+
+    The OPE-95 incident: gates ran in whatever ``repo_dir`` had checked out —
+    a stale main — while the PR branch lived in the agent's linked worktree,
+    so no push could ever change the gate verdict. This helper guarantees the
+    returned directory contains the tree of ``head``:
+
+    - ``head == "HEAD"``: the resolved clone as today (no fetch, no worktree).
+    - Clone already at the head commit with a clean ``status --porcelain``:
+      the clone — a clean tree at the head commit IS the head tree, and it
+      keeps the agent's installed dependencies for gate commands without an
+      install step.
+    - Anything else (drifted or dirty): a detached ephemeral worktree of the
+      head commit under ``/tmp``. Never a checkout mutation — git refuses to
+      check out a branch already held by the agent's worktree, and mutating
+      the agent's tree would race its own work.
+    - None: the head cannot be resolved or materialized — the caller keeps
+      the gate's fail-open contract.
+
+    Callers must remove an ephemeral tree via ``_remove_gate_tree`` after the
+    gate run, pass or fail.
+    """
+    if head == "HEAD":
+        return repo_dir, False
+    commit = await _resolve_head_commit(backend, repo_dir, head)
+    if commit is None:
+        return None
+    quoted_dir = shlex.quote(repo_dir)
+    state = await backend.aexecute(
+        f"git -C {quoted_dir} rev-parse HEAD && git -C {quoted_dir} status --porcelain",
+        timeout=DIFF_TIMEOUT_SECONDS,
+    )
+    lines = [
+        line.strip()
+        for line in (getattr(state, "output", "") or "").splitlines()
+        if line.strip()
+    ]
+    if getattr(state, "exit_code", None) == 0 and lines == [commit]:
+        return repo_dir, False
+    gate_dir = f"{_GATE_TREE_PREFIX}{thread_id}"
+    quoted_gate = shlex.quote(gate_dir)
+    # Pre-clean a leftover from a crashed prior run, then materialize.
+    await backend.aexecute(
+        f"git -C {quoted_dir} worktree remove --force {quoted_gate} 2>/dev/null; "
+        f"rm -rf {quoted_gate}",
+        timeout=DIFF_TIMEOUT_SECONDS,
+    )
+    response = await backend.aexecute(
+        f"git -C {quoted_dir} worktree add --detach {quoted_gate} {shlex.quote(commit)}",
+        timeout=DIFF_TIMEOUT_SECONDS,
+    )
+    if getattr(response, "exit_code", None) != 0:
+        return None
+    return gate_dir, True
+
+
+async def _remove_gate_tree(backend: Any, repo_dir: str, gate_dir: str) -> None:
+    """Best-effort removal of the ephemeral gate worktree; never raises."""
+    try:
+        await backend.aexecute(
+            f"git -C {shlex.quote(repo_dir)} worktree remove --force "
+            f"{shlex.quote(gate_dir)} 2>/dev/null; rm -rf {shlex.quote(gate_dir)}",
+            timeout=DIFF_TIMEOUT_SECONDS,
+        )
+    except Exception:  # pragma: no cover - cleanup must not mask gate results
+        logger.exception("quality gates: failed to remove gate worktree %s", gate_dir)
 
 
 def _tool_name(request: ToolCallRequest) -> str | None:
@@ -512,7 +618,20 @@ class QualityGatesMiddleware(AgentMiddleware):
                     "quality gates: could not diff %r against base %r — passing", repo_dir, base
                 )
                 return None
-            failure = await run_quality_gates(backend, changed, repo_dir)
+            tree = await _materialize_gate_tree(backend, repo_dir, head, str(thread_id))
+            if tree is None:
+                logger.error(
+                    "quality gates: could not materialize head %r in %r — passing",
+                    head,
+                    repo_dir,
+                )
+                return None
+            gate_dir, ephemeral = tree
+            try:
+                failure = await run_quality_gates(backend, changed, gate_dir)
+            finally:
+                if ephemeral:
+                    await _remove_gate_tree(backend, repo_dir, gate_dir)
         except Exception:
             # ponytail: infrastructure fault in the gate itself must not
             # permanently block PR creation — log loudly and fail open.

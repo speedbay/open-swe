@@ -323,6 +323,98 @@ def test_middleware_fails_open_when_diff_unavailable(demo_gates, monkeypatch, ca
     assert "could not diff" in caplog.text
 
 
+# --- head-tree materialization (OPE-95) --------------------------------------
+
+
+def _head_script(clone_state: str) -> dict[str, FakeResponse]:
+    """Scripted backend for a head resolving to commit ``bbb``.
+
+    ``clone_state`` is the combined ``rev-parse HEAD && status --porcelain``
+    output: the clone's commit plus any dirty-file lines.
+    """
+    return {
+        "rev-parse --verify": FakeResponse(output="bbb\n"),
+        "rev-parse HEAD &&": FakeResponse(output=clone_state),
+        "diff --name-only": FakeResponse(output="demo/app/main.py\n"),
+    }
+
+
+async def _opened(request: Any) -> Any:
+    return "pr-opened"
+
+
+def test_gates_run_in_head_worktree_when_clone_differs(demo_gates, monkeypatch) -> None:
+    """A clone at another commit gates an ephemeral worktree of the head.
+
+    The OPE-95 incident shape: the primary clone sits on a stale commit while
+    the PR branch lives elsewhere — gate commands must cd into the head's
+    worktree, never the stale tree.
+    """
+    backend = FakeBackend(_head_script("aaa\n"))
+    _wire(monkeypatch, backend)
+
+    assert _run(QualityGatesMiddleware().awrap_tool_call(_request(head="feature-x"), _opened)) == "pr-opened"
+    gate = next(c for c in backend.commands if "run-lint" in c)
+    assert gate.startswith("cd /tmp/gate-t-1/demo && ")
+    assert any("worktree add --detach /tmp/gate-t-1 bbb" in c for c in backend.commands)
+    after_gate = backend.commands[backend.commands.index(gate) + 1 :]
+    assert any("worktree remove --force /tmp/gate-t-1" in c for c in after_gate)
+
+
+def test_gates_run_in_place_when_clone_at_head_and_clean(demo_gates, monkeypatch) -> None:
+    """A clean clone already at the head commit is the head tree: no worktree."""
+    backend = FakeBackend(_head_script("bbb\n"))
+    _wire(monkeypatch, backend)
+
+    assert _run(QualityGatesMiddleware().awrap_tool_call(_request(head="feature-x"), _opened)) == "pr-opened"
+    gate = next(c for c in backend.commands if "run-lint" in c)
+    assert gate.startswith("cd /workspace/wh/demo && ")
+    assert not any("worktree add" in c for c in backend.commands)
+
+
+def test_gates_go_ephemeral_when_clone_at_head_but_dirty(demo_gates, monkeypatch) -> None:
+    """Uncommitted edits differ from the pushed head: gate the worktree."""
+    backend = FakeBackend(_head_script("bbb\n M demo/app/main.py\n"))
+    _wire(monkeypatch, backend)
+
+    assert _run(QualityGatesMiddleware().awrap_tool_call(_request(head="feature-x"), _opened)) == "pr-opened"
+    gate = next(c for c in backend.commands if "run-lint" in c)
+    assert gate.startswith("cd /tmp/gate-t-1/demo && ")
+
+
+def test_gate_worktree_removed_when_gate_fails(demo_gates, monkeypatch) -> None:
+    """The ephemeral worktree never outlives the run, pass or fail."""
+    backend = FakeBackend(
+        {**_head_script("aaa\n"), "run-lint": FakeResponse(output="1 failed", exit_code=1)}
+    )
+    _wire(monkeypatch, backend)
+
+    async def handler(request: Any) -> Any:  # pragma: no cover - gate must block
+        raise AssertionError("handler must not run when a gate fails")
+
+    result = _run(QualityGatesMiddleware().awrap_tool_call(_request(head="feature-x"), handler))
+    assert isinstance(result, ToolMessage)
+    gate = next(c for c in backend.commands if "run-lint" in c)
+    after_gate = backend.commands[backend.commands.index(gate) + 1 :]
+    assert any("worktree remove --force /tmp/gate-t-1" in c for c in after_gate)
+
+
+def test_middleware_fails_open_when_head_unresolvable(demo_gates, monkeypatch, caplog) -> None:
+    """A head that resolves nowhere keeps the gate's fail-open contract."""
+    backend = FakeBackend(
+        {
+            "diff --name-only": FakeResponse(output="demo/app/main.py\n"),
+            "rev-parse --verify": FakeResponse(output="fatal: bad ref", exit_code=128),
+        }
+    )
+    _wire(monkeypatch, backend)
+
+    with caplog.at_level("ERROR"):
+        result = _run(QualityGatesMiddleware().awrap_tool_call(_request(head="gone"), _opened))
+    assert result == "pr-opened"
+    assert "could not materialize" in caplog.text
+
+
 # --- repo-dir resolution (OPE-59) --------------------------------------------
 
 
@@ -427,5 +519,37 @@ def test_integration_gate_failure_and_pass_through_real_container(monkeypatch) -
 
         _run(sandbox.aexecute("touch /workspace/wh/demo/marker.txt"))
         assert _run(run_quality_gates(sandbox, ["demo/x.py"], resolved)) is None
+
+        # OPE-95: through the middleware, a primary checkout on an older
+        # commit must gate the requested head's tree — the probe content
+        # exists only on the branch, so a pass proves the head was validated.
+        _run(
+            sandbox.aexecute(
+                "cd /workspace/wh && git config user.email t@t && git config user.name t"
+                " && git checkout -qb main && echo old > demo/probe.txt && git add -A"
+                " && git commit -qm one && git checkout -qb feature"
+                " && echo new > demo/probe.txt && git commit -qam two"
+                " && git checkout -q main"
+            )
+        )
+        monkeypatch.setattr(
+            qg,
+            "PROJECT_QUALITY_GATES",
+            {"demo": (GateCommand("head probe", "grep -q new probe.txt"),)},
+        )
+
+        async def fake_get_backend(thread_id: str):
+            return sandbox
+
+        monkeypatch.setattr(qg, "get_sandbox_backend", fake_get_backend)
+        monkeypatch.setattr(
+            qg,
+            "get_config",
+            lambda: {"configurable": {"thread_id": "t-int", "repo": {"name": "wh"}}},
+        )
+        result = _run(QualityGatesMiddleware().awrap_tool_call(_request(head="feature"), _opened))
+        assert result == "pr-opened"
+        leftovers = _run(sandbox.aexecute("ls -d /tmp/gate-* 2>/dev/null"))
+        assert not (getattr(leftovers, "output", "") or "").strip()
     finally:
         subprocess.run(["docker", "rm", "-f", sandbox.id], capture_output=True)
