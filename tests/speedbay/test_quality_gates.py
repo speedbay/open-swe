@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
+import subprocess
+from types import SimpleNamespace
 from typing import Any
 
 import attrs
@@ -46,6 +49,21 @@ class FakeBackend:
             if needle in command:
                 return response
         return FakeResponse()
+
+
+class ShellBackend:
+    """Test backend that executes commands against a temporary local repository."""
+
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> FakeResponse:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return FakeResponse(completed.stdout + completed.stderr, completed.returncode)
 
 
 def _run(coro):
@@ -222,6 +240,7 @@ def _wire(monkeypatch: pytest.MonkeyPatch, backend: FakeBackend) -> None:
     async def fake_get_backend(thread_id: str):
         return backend
 
+    monkeypatch.setattr(qg, "uuid4", lambda: SimpleNamespace(hex="run"))
     monkeypatch.setattr(qg, "get_sandbox_backend", fake_get_backend)
     monkeypatch.setattr(
         qg,
@@ -274,9 +293,14 @@ def test_middleware_passes_pr_when_gates_green(demo_gates, monkeypatch) -> None:
     assert _run(QualityGatesMiddleware().awrap_tool_call(_request(), handler)) == "pr-opened"
 
 
-def test_middleware_diffs_requested_head_branch(demo_gates, monkeypatch) -> None:
-    """The gate diffs the requested PR head ref, not the sandbox's HEAD."""
-    backend = FakeBackend({"diff --name-only": FakeResponse(output="")})
+def test_middleware_diffs_fetched_head_commit(demo_gates, monkeypatch) -> None:
+    """Gate selection and execution use the same freshly fetched head commit."""
+    backend = FakeBackend(
+        {
+            "rev-parse --verify": FakeResponse(output="bbb\n"),
+            "diff --name-only": FakeResponse(output=""),
+        }
+    )
     _wire(monkeypatch, backend)
 
     async def handler(request: Any) -> Any:
@@ -284,19 +308,20 @@ def test_middleware_diffs_requested_head_branch(demo_gates, monkeypatch) -> None
 
     request = _request(head="speedbay:feature-x")
     assert _run(QualityGatesMiddleware().awrap_tool_call(request, handler)) == "pr-opened"
-    # commands[0] is the resolve_repo_dir probe; the diff targets the clone.
+    fetch = next(c for c in backend.commands if "fetch origin" in c)
     diff = next(c for c in backend.commands if "diff --name-only" in c)
-    assert diff.startswith("git -C /workspace/wh diff --name-only")
-    assert diff.endswith("origin/main...feature-x")
+    assert backend.commands.index(fetch) < backend.commands.index(diff)
+    assert diff == "git -C /workspace/wh diff --name-only origin/main...bbb"
 
 
 def test_diff_refs_are_shell_quoted_against_hostile_branch_names(demo_gates, monkeypatch) -> None:
-    """Metacharacter refs cannot break out of the git diff invocation.
-
-    An unquoted ``feature;true`` would make the shell run ``true`` after the
-    failed diff — exit 0 with no paths, silently skipping every gate.
-    """
-    backend = FakeBackend({"diff --name-only": FakeResponse(output="")})
+    """Metacharacter refs cannot break out of head resolution or the diff."""
+    backend = FakeBackend(
+        {
+            "rev-parse --verify": FakeResponse(output="bbb\n"),
+            "diff --name-only": FakeResponse(output=""),
+        }
+    )
     _wire(monkeypatch, backend)
 
     async def handler(request: Any) -> Any:
@@ -304,8 +329,10 @@ def test_diff_refs_are_shell_quoted_against_hostile_branch_names(demo_gates, mon
 
     request = _request(base="main;rm -rf /", head="feature;true")
     assert _run(QualityGatesMiddleware().awrap_tool_call(request, handler)) == "pr-opened"
+    fetch = next(c for c in backend.commands if "fetch origin" in c)
     diff = next(c for c in backend.commands if "diff --name-only" in c)
-    assert diff.endswith("diff --name-only 'origin/main;rm -rf /'...'feature;true'")
+    assert fetch.endswith("fetch origin 'feature;true'")
+    assert diff.endswith("diff --name-only 'origin/main;rm -rf /'...bbb")
 
 
 def test_middleware_fails_open_when_diff_unavailable(demo_gates, monkeypatch, caplog) -> None:
@@ -321,6 +348,154 @@ def test_middleware_fails_open_when_diff_unavailable(demo_gates, monkeypatch, ca
         result = _run(QualityGatesMiddleware().awrap_tool_call(_request(), handler))
     assert result == "pr-opened"
     assert "could not diff" in caplog.text
+
+
+# --- head-tree materialization (OPE-95) --------------------------------------
+
+
+def _head_script(clone_state: str) -> dict[str, FakeResponse]:
+    """Scripted backend for a head resolving to commit ``bbb``.
+
+    ``clone_state`` is the combined ``rev-parse HEAD && status --porcelain``
+    output: the clone's commit plus any dirty-file lines.
+    """
+    return {
+        "rev-parse --verify": FakeResponse(output="bbb\n"),
+        "rev-parse HEAD &&": FakeResponse(output=clone_state),
+        "diff --name-only": FakeResponse(output="demo/app/main.py\n"),
+    }
+
+
+async def _opened(request: Any) -> Any:
+    return "pr-opened"
+
+
+def test_gates_run_in_head_worktree_when_clone_differs(demo_gates, monkeypatch) -> None:
+    """A clone at another commit gates an ephemeral worktree of the head.
+
+    The OPE-95 incident shape: the primary clone sits on a stale commit while
+    the PR branch lives elsewhere — gate commands must cd into the head's
+    worktree, never the stale tree.
+    """
+    backend = FakeBackend(_head_script("aaa\n"))
+    _wire(monkeypatch, backend)
+
+    assert (
+        _run(QualityGatesMiddleware().awrap_tool_call(_request(head="feature-x"), _opened))
+        == "pr-opened"
+    )
+    gate = next(c for c in backend.commands if "run-lint" in c)
+    assert gate.startswith("cd /tmp/gate-t-1-run/demo && ")
+    assert any("worktree add --detach /tmp/gate-t-1-run bbb" in c for c in backend.commands)
+    after_gate = backend.commands[backend.commands.index(gate) + 1 :]
+    assert any("worktree remove --force /tmp/gate-t-1-run" in c for c in after_gate)
+
+
+def test_gate_worktrees_are_unique_per_invocation(monkeypatch) -> None:
+    """Overlapping calls in one thread receive different worktree paths."""
+    ids = iter(("first", "second"))
+    monkeypatch.setattr(qg, "uuid4", lambda: SimpleNamespace(hex=next(ids)))
+    backend = FakeBackend(_head_script("aaa\n"))
+
+    first = _run(qg._materialize_gate_tree(backend, REPO_DIR, "bbb", "t-1"))
+    second = _run(qg._materialize_gate_tree(backend, REPO_DIR, "bbb", "t-1"))
+
+    assert first == ("/tmp/gate-t-1-first", True)
+    assert second == ("/tmp/gate-t-1-second", True)
+
+
+def test_gates_run_in_place_when_clone_at_head_and_clean(demo_gates, monkeypatch) -> None:
+    """A clean clone already at the head commit is the head tree: no worktree."""
+    backend = FakeBackend(_head_script("bbb\n"))
+    _wire(monkeypatch, backend)
+
+    assert (
+        _run(QualityGatesMiddleware().awrap_tool_call(_request(head="feature-x"), _opened))
+        == "pr-opened"
+    )
+    gate = next(c for c in backend.commands if "run-lint" in c)
+    assert gate.startswith("cd /workspace/wh/demo && ")
+    assert not any("worktree add" in c for c in backend.commands)
+
+
+def test_gates_go_ephemeral_when_clone_at_head_but_dirty(demo_gates, monkeypatch, tmp_path) -> None:
+    """A dirty clone gates committed content and removes its temporary worktree."""
+    repo = tmp_path / "wh"
+    (repo / "demo").mkdir(parents=True)
+    for args in (
+        ("init", "-qb", "main"),
+        ("config", "user.email", "test@example.com"),
+        ("config", "user.name", "Test"),
+    ):
+        subprocess.run(("git", *args), cwd=repo, check=True)
+    probe = repo / "demo" / "probe.txt"
+    probe.write_text("base\n")
+    subprocess.run(("git", "add", "."), cwd=repo, check=True)
+    subprocess.run(("git", "commit", "-qm", "base"), cwd=repo, check=True)
+    subprocess.run(("git", "checkout", "-qb", "feature-x"), cwd=repo, check=True)
+    probe.write_text("committed\n")
+    subprocess.run(("git", "commit", "-qam", "feature"), cwd=repo, check=True)
+    probe.write_text("dirty\n")
+
+    observed = tmp_path / "observed.txt"
+    gate_prefix = str(tmp_path / "gate-")
+    backend = ShellBackend()
+
+    async def fake_get_backend(thread_id: str):
+        return backend
+
+    async def fake_resolve_repo_dir(backend: Any, configurable: dict[str, Any]) -> str:
+        return str(repo)
+
+    monkeypatch.setattr(qg, "get_sandbox_backend", fake_get_backend)
+    monkeypatch.setattr(qg, "resolve_repo_dir", fake_resolve_repo_dir)
+    monkeypatch.setattr(qg, "_GATE_TREE_PREFIX", gate_prefix)
+    monkeypatch.setattr(qg, "uuid4", lambda: SimpleNamespace(hex="run"))
+    monkeypatch.setattr(
+        qg,
+        "get_config",
+        lambda: {"configurable": {"thread_id": "dirty", "repo": {"name": "wh"}}},
+    )
+    monkeypatch.setattr(
+        qg,
+        "PROJECT_QUALITY_GATES",
+        {"demo": (GateCommand("record content", f"cat probe.txt > {shlex.quote(str(observed))}"),)},
+    )
+
+    result = _run(QualityGatesMiddleware().awrap_tool_call(_request(head="feature-x"), _opened))
+    assert result == "pr-opened"
+    assert observed.read_text() == "committed\n"
+    assert not (tmp_path / "gate-dirty-run").exists()
+
+
+def test_gate_worktree_removed_when_gate_fails(demo_gates, monkeypatch) -> None:
+    """The ephemeral worktree never outlives the run, pass or fail."""
+    backend = FakeBackend(
+        {**_head_script("aaa\n"), "run-lint": FakeResponse(output="1 failed", exit_code=1)}
+    )
+    _wire(monkeypatch, backend)
+
+    async def handler(request: Any) -> Any:  # pragma: no cover - gate must block
+        raise AssertionError("handler must not run when a gate fails")
+
+    result = _run(QualityGatesMiddleware().awrap_tool_call(_request(head="feature-x"), handler))
+    assert isinstance(result, ToolMessage)
+    gate = next(c for c in backend.commands if "run-lint" in c)
+    after_gate = backend.commands[backend.commands.index(gate) + 1 :]
+    assert any("worktree remove --force /tmp/gate-t-1-run" in c for c in after_gate)
+
+
+def test_middleware_fails_open_when_head_unresolvable(demo_gates, monkeypatch, caplog) -> None:
+    """A head that resolves nowhere keeps the gate's fail-open contract."""
+    backend = FakeBackend(
+        {"rev-parse --verify": FakeResponse(output="fatal: bad ref", exit_code=128)}
+    )
+    _wire(monkeypatch, backend)
+
+    with caplog.at_level("ERROR"):
+        result = _run(QualityGatesMiddleware().awrap_tool_call(_request(head="gone"), _opened))
+    assert result == "pr-opened"
+    assert "could not resolve" in caplog.text
 
 
 # --- repo-dir resolution (OPE-59) --------------------------------------------
@@ -406,8 +581,6 @@ def _docker_ready() -> bool:
 @pytest.mark.skipif(not _docker_ready(), reason="docker daemon or sandbox image unavailable")
 def test_integration_gate_failure_and_pass_through_real_container(monkeypatch) -> None:
     """One seeded failing command and one passing command via the docker backend."""
-    import subprocess
-
     from agent.speedbay.docker_sandbox import create_docker_sandbox
 
     sandbox = create_docker_sandbox()
@@ -427,5 +600,37 @@ def test_integration_gate_failure_and_pass_through_real_container(monkeypatch) -
 
         _run(sandbox.aexecute("touch /workspace/wh/demo/marker.txt"))
         assert _run(run_quality_gates(sandbox, ["demo/x.py"], resolved)) is None
+
+        # OPE-95: through the middleware, a primary checkout on an older
+        # commit must gate the requested head's tree — the probe content
+        # exists only on the branch, so a pass proves the head was validated.
+        _run(
+            sandbox.aexecute(
+                "cd /workspace/wh && git config user.email t@t && git config user.name t"
+                " && git checkout -qb main && echo old > demo/probe.txt && git add -A"
+                " && git commit -qm one && git checkout -qb feature"
+                " && echo new > demo/probe.txt && git commit -qam two"
+                " && git checkout -q main"
+            )
+        )
+        monkeypatch.setattr(
+            qg,
+            "PROJECT_QUALITY_GATES",
+            {"demo": (GateCommand("head probe", "grep -q new probe.txt"),)},
+        )
+
+        async def fake_get_backend(thread_id: str):
+            return sandbox
+
+        monkeypatch.setattr(qg, "get_sandbox_backend", fake_get_backend)
+        monkeypatch.setattr(
+            qg,
+            "get_config",
+            lambda: {"configurable": {"thread_id": "t-int", "repo": {"name": "wh"}}},
+        )
+        result = _run(QualityGatesMiddleware().awrap_tool_call(_request(head="feature"), _opened))
+        assert result == "pr-opened"
+        leftovers = _run(sandbox.aexecute("ls -d /tmp/gate-* 2>/dev/null"))
+        assert not (getattr(leftovers, "output", "") or "").strip()
     finally:
         subprocess.run(["docker", "rm", "-f", sandbox.id], capture_output=True)
