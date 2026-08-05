@@ -106,8 +106,13 @@ def test_baydoor_build_gates_use_ci_placeholder_environment() -> None:
 
     for gate_name in ("build", "frontend render check"):
         assert all(f"{name}=" in gates[gate_name] for name in placeholder_names)
+    # render:check boots the app: Clerk middleware needs a valid-format fake
+    # secret too (OPE-92 follow-up; build proved it does not need one).
+    assert "CLERK_SECRET_KEY=" in gates["frontend render check"]
+    assert "CLERK_SECRET_KEY=" not in gates["build"]
     for gate_name in ("install dependencies", "eslint", "test", "typecheck"):
         assert not any(f"{name}=" in gates[gate_name] for name in placeholder_names)
+        assert "CLERK_SECRET_KEY=" not in gates[gate_name]
 
 
 def test_every_configured_project_gate_fires() -> None:
