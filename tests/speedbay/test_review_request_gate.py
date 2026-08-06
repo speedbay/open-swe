@@ -68,6 +68,7 @@ async def test_human_request_sources_dispatch_unchanged(
 
     assert result == {"success": True, "review_thread_id": "review-123"}
     dispatcher.assert_awaited_once()
+    assert dispatcher.await_args is not None
     pr_ref = dispatcher.await_args.args[0]
     assert (pr_ref.owner, pr_ref.repo, pr_ref.number) == ("speedbay", "warehouse", 923)
     assert dispatcher.await_args.kwargs == {
