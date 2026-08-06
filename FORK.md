@@ -39,6 +39,12 @@ all survived, and re-add any a merge dropped (each is marked in-code with a
 | 9 | `export` on `agentsRequest` (OPE-10) | `ui/src/features/agents/lib/api.ts` — one-word visibility change so the fork-added `ui/src/features/agents/lib/gateApproval.ts` reuses the upstream request client |
 | 10 | `GateApprovalCard` render site (OPE-10) | import + one JSX element in `AgentThreadView.tsx`; component and hooks are fork-added files |
 | 11 | `PendingGateApprovalsBanner` render site (OPE-10) | import + one JSX element in `AgentsHome.tsx`; component and hooks are fork-added files |
+| 12 | Wrapped `request_pr_review` tool registration (OPE-100) | direct import in `agent/server.py`; source gate lives in `agent/speedbay/review_request_gate.py` |
+
+OPE-100 deliberately gates review requests by run source rather than comparing the PR
+head with the run's working branch: the Slack/GitHub allowlist covers every current
+human-request lane and denies every implementation-run lane. Add a self-review check
+only if a Slack-triggered run ever reviews its own PR.
 
 Identified by symbol, not `file:line` — the middleware list moved from :946 to :953 on the very first upstream merge.
 
@@ -81,7 +87,7 @@ The upstream-owned files below carry edits. Each is marked in-code with
 
 | File | Edit | Why not elsewhere |
 |---|---|---|
-| `agent/server.py` | Imports + two entries in the `get_agent()` middleware list (conventions, quality gates) | Sanctioned registration point; no alternative seam |
+| `agent/server.py` | Imports + two entries in the `get_agent()` middleware list (conventions, quality gates), plus the wrapped `request_pr_review` tool import (OPE-100) | Sanctioned registration point; no alternative seam |
 | `agent/utils/tracing.py` | Import + one line in `traced_graph_factory`: pass `strip_server_runtime(config)` to the wrapped factory (OPE-15) | The single chokepoint every traced langgraph.json entrypoint (agent, reviewer, analyzer, chat) routes through — stripping here keeps the four factory files byte-identical to upstream. Logic lives in `agent/speedbay/runtime_compat.py`. |
 | `agent/scheduler.py` | Import + `strip_server_runtime(config or {})` at its single `.with_config(...)` site (OPE-15) | The only langgraph.json factory registered without `traced_graph_factory`, so it needs the strip locally. |
 | `pyproject.toml` | One added floor: `langgraph-api>=0.11.1` (OPE-15) | Upstream pins `langgraph>=1.1.10` unbounded, so uv resolves langgraph 1.2.x against langgraph-api 0.10.3 — below Studio's required 0.11. Single minimal line; re-apply after upstream merges. |
