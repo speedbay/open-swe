@@ -1,0 +1,74 @@
+# Speed Bay dashboard and E2E CI (OPE-99).
+#
+# SPEEDBAY org-owned file — upstream does not own it (new file in an
+# upstream-owned directory, permitted by FORK.md § File placement rule).
+#
+# Upstream's disabled "Agent CI" includes this coverage, but re-enabling its full
+# matrix would add unrelated cost and noise. Speedbay CI intentionally covers
+# only org-layer paths, so this separate workflow keeps both charters intact.
+# These path-filtered checks are evidence when present, not ruleset requirements:
+# making them required would deadlock PRs whose paths do not trigger the workflow.
+
+name: Speedbay Dashboard + E2E
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "agent/dashboard/**"
+      - "tests/dashboard/**"
+      - "tests/e2e/**"
+      - "ui/**"
+      - ".github/workflows/speedbay-dashboard-e2e.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dashboard-unit:
+    name: Dashboard unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Install dependencies
+        run: uv sync --locked --extra dev
+      - name: Run dashboard unit tests
+        run: uv run pytest -vvv tests/dashboard
+
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install Python deps (langgraph dev runtime)
+        run: uv sync --locked
+      - name: Install Playwright + Chromium
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
+          npx playwright install --with-deps chromium
+      - name: Run E2E
+        working-directory: tests/e2e
+        run: npx playwright test
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            tests/e2e/playwright-report
+            tests/e2e/test-results
+          retention-days: 7
