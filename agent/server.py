@@ -371,7 +371,10 @@ async def _configure_git_identity(sandbox_backend: SandboxBackendProtocol) -> No
     await asyncio.to_thread(
         sandbox_backend.execute,
         f"git config --global user.name '{OPEN_SWE_BOT_NAME}' && "
-        f"git config --global user.email '{OPEN_SWE_BOT_EMAIL}'",
+        f"git config --global user.email '{OPEN_SWE_BOT_EMAIL}' && "
+        # SPEEDBAY DEVIATION (OPE-109): pulls rebase by default — target-repo
+        # linear-history rulesets reject pushed merge commits.
+        "git config --global pull.rebase true",
     )
 
 

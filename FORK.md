@@ -87,7 +87,7 @@ The upstream-owned files below carry edits. Each is marked in-code with
 
 | File | Edit | Why not elsewhere |
 |---|---|---|
-| `agent/server.py` | Imports + two entries in the `get_agent()` middleware list (conventions, quality gates), plus the wrapped `request_pr_review` tool import (OPE-100) | Sanctioned registration point; no alternative seam |
+| `agent/server.py` | Imports + two entries in the `get_agent()` middleware list (conventions, quality gates), plus the wrapped `request_pr_review` tool import (OPE-100), plus `pull.rebase true` in `_configure_git_identity` (OPE-109) | Sanctioned registration point; no alternative seam. The rebase default rides the only sandbox-global git-config call, so branch syncs never create merge commits that linear-history rulesets reject. |
 | `agent/utils/tracing.py` | Import + one line in `traced_graph_factory`: pass `strip_server_runtime(config)` to the wrapped factory (OPE-15) | The single chokepoint every traced langgraph.json entrypoint (agent, reviewer, analyzer, chat) routes through — stripping here keeps the four factory files byte-identical to upstream. Logic lives in `agent/speedbay/runtime_compat.py`. |
 | `agent/scheduler.py` | Import + `strip_server_runtime(config or {})` at its single `.with_config(...)` site (OPE-15) | The only langgraph.json factory registered without `traced_graph_factory`, so it needs the strip locally. |
 | `pyproject.toml` | One added floor: `langgraph-api>=0.11.1` (OPE-15) | Upstream pins `langgraph>=1.1.10` unbounded, so uv resolves langgraph 1.2.x against langgraph-api 0.10.3 — below Studio's required 0.11. Single minimal line; re-apply after upstream merges. |
