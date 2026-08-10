@@ -56,7 +56,7 @@ def test_elementor_license_is_available_inside_container(
     monkeypatch.setattr(docker_sandbox, "_provision", lambda _container: None)
     sandbox = docker_sandbox.create_docker_sandbox()
     try:
-        result = sandbox.execute('test -n "$ELEMENTOR_PRO_LICENSE_KEY"')
+        result = sandbox.execute('test "$ELEMENTOR_PRO_LICENSE_KEY" = "test-license"')
         assert result.exit_code == 0, result.output
     finally:
         subprocess.run(["docker", "rm", "-f", sandbox.id], capture_output=True)
