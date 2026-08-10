@@ -57,7 +57,10 @@ lookup: `sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder`.
 The Azure host is designed for unattended operation. With the Docker backend
 (OPE-7) live, agent commands run in per-run containers: no host filesystem,
 host env, or host credentials are reachable (negative-proof test in
-`tests/speedbay/test_docker_sandbox.py`). The blanket prohibition on
+`tests/speedbay/test_docker_sandbox.py`). The one named exception is
+`ELEMENTOR_PRO_LICENSE_KEY`: when set in the deployment `.env`, this vendor
+license key is passed to new containers so Baypress can install Elementor Pro;
+it grants no access to Speed Bay data. The blanket prohibition on
 `cloudflared service install` is therefore lifted **conditionally**: an
 always-on tunnel is acceptable only while `SANDBOX_TYPE=docker` — revert to
 start/stop-per-session if the backend is ever switched back to `local`. What
@@ -87,6 +90,10 @@ credential-free local boot:
 | `LANGCHAIN_TRACING_V2` | `"false"` or absent — **never `""`** | starlette casts it to bool; `""` raises `ValueError` before any app code runs |
 | `SANDBOX_TYPE` | `"docker"` | default is `langsmith`, which is fail-closed without `DEFAULT_SANDBOX_SNAPSHOT_ID`. `docker` (OPE-7) runs each agent in a container from `openswe-sandbox:dev` — build it first (see `speedbay/docker/Dockerfile.sandbox`). `local` still exists but has **no isolation**; only for credential-free bring-up on a machine with no real keys |
 | `DASHBOARD_BASE_URL` | `""` | any `http://localhost*` value turns on the local-dev LLM key check (`agent/utils/model.py:295`), which requires a key for the default model |
+
+For the deployed backend, set `ELEMENTOR_PRO_LICENSE_KEY` in `.env` so new
+Docker sandboxes can run the Baypress Composer quality gate; local boots that do
+not work on Baypress can leave it unset.
 
 Both boot validators run in the FastAPI lifespan at `agent/api/app.py:24-25`.
 

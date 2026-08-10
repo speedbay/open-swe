@@ -27,6 +27,7 @@ TTL_ENV = "DOCKER_SANDBOX_TTL_SECONDS"
 DEFAULT_TTL_SECONDS = 24 * 3600  # container lifetime before the lazy sweep removes it
 MEMORY_ENV = "DOCKER_SANDBOX_MEMORY"
 DEFAULT_MEMORY = "4g"  # docker --memory limit per sandbox container
+ELEMENTOR_PRO_LICENSE_KEY_ENV = "ELEMENTOR_PRO_LICENSE_KEY"
 DEFAULT_EXECUTE_TIMEOUT = 300  # seconds; in-container timeout(1) per executed command
 # Installation tokens live one hour; refresh with headroom so a long agent run
 # never hands git/gh an expired token.
@@ -46,6 +47,11 @@ def sandbox_ttl_seconds() -> int:
 def sandbox_memory() -> str:
     """Container memory limit; ``DOCKER_SANDBOX_MEMORY`` overrides the default."""
     return os.getenv(MEMORY_ENV, DEFAULT_MEMORY)
+
+
+def elementor_pro_license_key() -> str | None:
+    """Elementor Pro license key to pass to new sandbox containers when configured."""
+    return os.getenv(ELEMENTOR_PRO_LICENSE_KEY_ENV) or None
 
 
 # --- ChatGPT device login (chatgpt_device_login.py) --------------------------

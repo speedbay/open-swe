@@ -3,7 +3,8 @@
 SPEEDBAY org-layer file — upstream does not own it. Replaces the no-isolation
 ``local`` backend: agent commands run inside a container booted from
 ``openswe-sandbox:dev`` (see ``speedbay/docker/Dockerfile.sandbox``), so a run
-cannot read host paths, host env, or host credentials.
+cannot read host paths, host credentials, or host env except the explicitly
+provisioned Elementor Pro vendor license key.
 
 Because ``agent/utils/github_proxy.py`` is LangSmith-only, this backend also
 owns git auth for its containers: at create (and again at reconnect) it mints a
@@ -46,6 +47,7 @@ from deepagents.backends.sandbox import MAX_OUTPUT_BYTES, BaseSandbox
 from .config import (
     DEFAULT_EXECUTE_TIMEOUT,
     TOKEN_REFRESH_SECONDS,
+    elementor_pro_license_key,
     sandbox_image,
     sandbox_memory,
     sandbox_ttl_seconds,
@@ -327,6 +329,8 @@ def create_docker_sandbox(sandbox_id: str | None = None) -> DockerSandbox:
         return DockerSandbox(sandbox_id)
 
     name = f"openswe-{uuid.uuid4().hex[:12]}"
+    license_key = elementor_pro_license_key()
+    license_env = ["--env", f"ELEMENTOR_PRO_LICENSE_KEY={license_key}"] if license_key else []
     proc = _docker(
         "run",
         "-d",
@@ -338,6 +342,7 @@ def create_docker_sandbox(sandbox_id: str | None = None) -> DockerSandbox:
         f"{_CREATED_LABEL}={int(time.time())}",
         "--env",
         f"GIT_CONFIG_GLOBAL={_GITCONFIG_PATH}",
+        *license_env,
         "--workdir",
         "/workspace",
         "--pids-limit",
