@@ -17,10 +17,13 @@ permissions:
 on:
   pull_request:
     paths:
+      - "agent/**"
       - "agent/dashboard/**"
       - "tests/dashboard/**"
       - "tests/e2e/**"
       - "ui/**"
+      - "pyproject.toml"
+      - "uv.lock"
       - ".github/workflows/speedbay-dashboard-e2e.yml"
   workflow_dispatch:
 
