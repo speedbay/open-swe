@@ -14,7 +14,7 @@ MSG_FILE="$1"
 # Drop the bot trailer and the Open SWE generated-by credit — and only those.
 # Patterns stay anchored to the open-swe attribution so legitimate lines like
 # "Generated with deterministic seed" survive.
-grep -viE '^(co-authored-by:[[:space:]]*open-swe|generated with \[?open swe|made by \[open swe\])' \
+grep -viE '^(co-authored-by:[[:space:]]*open-swe\[bot\][[:space:]]*<open-swe@users\.noreply\.github\.com>[[:space:]]*|generated with \[open swe\]\(https://github\.com/langchain-ai/open-swe\)[[:space:]]*|made by \[open swe\]\(https://github\.com/langchain-ai/open-swe\)[[:space:]]*)$' \
 	"$MSG_FILE" > "$MSG_FILE.tmp" || true
 
 # Collapse the trailing blank lines the removal leaves behind, without relying

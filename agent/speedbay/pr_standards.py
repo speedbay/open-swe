@@ -83,9 +83,9 @@ from .rules.atomicity import atomicity_findings, check_atomicity, parse_numstat
 from .rules.findings import GateFinding, GateSeverity
 from .rules.hygiene import (
     Violation,
-    check_attribution,
     check_commit_message,
     check_hygiene,
+    check_subject_independent,
     hygiene_findings,
 )
 
@@ -201,6 +201,68 @@ async def _rev_parse(backend: Any, repo_dir: str, ref: str) -> str | None:
     output = (getattr(response, "output", "") or "").strip().splitlines()
     sha = output[0].strip() if output else ""
     return sha or None
+
+
+async def _upstream_sync_commits(
+    backend: Any,
+    repo_dir: str,
+    base_sha: str,
+    head_sha: str,
+    commit_shas: frozenset[str],
+    *,
+    enabled: bool,
+) -> frozenset[str]:
+    """Return only range commits proven reachable from a fetched upstream main."""
+    if not enabled:
+        return frozenset()
+    ref = "refs/openswe/hygiene-upstream-main"
+    try:
+        fetch = await backend.aexecute(
+            f"git -C {shlex.quote(repo_dir)} fetch --no-tags "
+            f"https://github.com/langchain-ai/open-swe.git main:{ref}",
+            timeout=DIFF_TIMEOUT_SECONDS,
+        )
+        if getattr(fetch, "exit_code", None) != 0:
+            return frozenset()
+        upstream_sha = await _rev_parse(backend, repo_dir, ref)
+        if not upstream_sha:
+            return frozenset()
+        graph = await backend.aexecute(
+            f"git -C {shlex.quote(repo_dir)} rev-list --parents "
+            f"{shlex.quote(base_sha)}..{shlex.quote(head_sha)}",
+            timeout=DIFF_TIMEOUT_SECONDS,
+        )
+        if getattr(graph, "exit_code", None) != 0 or getattr(graph, "truncated", False):
+            return frozenset()
+        merge_parents = [
+            line.split()[2]
+            for line in (getattr(graph, "output", "") or "").splitlines()
+            if len(line.split()) > 2
+        ]
+        sync_merge = False
+        for parent in merge_parents:
+            if await _is_ancestor(backend, repo_dir, parent, upstream_sha):
+                sync_merge = True
+                break
+        if not sync_merge:
+            return frozenset()
+        proven: set[str] = set()
+        for commit in commit_shas:
+            if await _is_ancestor(backend, repo_dir, commit, upstream_sha):
+                proven.add(commit)
+        return frozenset(proven)
+    except Exception:
+        logger.exception("PR standards gate: upstream provenance verification failed")
+    return frozenset()
+
+
+async def _is_ancestor(backend: Any, repo_dir: str, commit: str, target: str) -> bool:
+    response = await backend.aexecute(
+        f"git -C {shlex.quote(repo_dir)} merge-base --is-ancestor "
+        f"{shlex.quote(commit)} {shlex.quote(target)}",
+        timeout=DIFF_TIMEOUT_SECONDS,
+    )
+    return getattr(response, "exit_code", None) == 0
 
 
 def _force_ready_for_review(request: ToolCallRequest) -> ToolCallRequest:
@@ -535,31 +597,41 @@ class PRStandardsMiddleware(AgentMiddleware):
                 )
 
             issue_id = _issue_id(configurable)
+            messages = await _commit_messages(backend, repo_dir, base_sha, head_sha)
+            if messages is None:
+                logger.error(
+                    "PR standards gate: could not inspect commits for %r — commit hygiene passing",
+                    repo_dir,
+                )
+                commit_violations = ()
+            else:
+                repo = configurable.get("repo") or {}
+                upstream_commits = await _upstream_sync_commits(
+                    backend,
+                    repo_dir,
+                    base_sha,
+                    head_sha,
+                    frozenset(sha for sha, _ in messages),
+                    enabled=repo.get("owner") == "speedbay" and repo.get("name") == "open-swe",
+                )
+                commit_violations = tuple(
+                    Violation(f"commit-{violation.rule}", f"commit {sha[:12]}: {violation.message}")
+                    for sha, message in messages
+                    for violation in check_commit_message(
+                        message,
+                        issue_id,
+                        exempt_rules=(
+                            frozenset({"title-format", "closes-line", "ai-attribution"})
+                            if sha in upstream_commits
+                            else frozenset()
+                        ),
+                    )
+                )
             if issue_id is not None:
-                messages = await _commit_messages(backend, repo_dir, base_sha, head_sha)
-                if messages is None:
-                    logger.error(
-                        "PR standards gate: could not inspect commits for %r — "
-                        "commit hygiene passing",
-                        repo_dir,
-                    )
-                    commit_violations = ()
-                else:
-                    commit_violations = tuple(
-                        Violation(
-                            f"commit-{violation.rule}",
-                            f"commit {sha[:12]}: {violation.message}",
-                        )
-                        for sha, message in messages
-                        for violation in check_commit_message(message, issue_id)
-                    )
                 violations = (*check_hygiene(title, body, branch, issue_id), *commit_violations)
             else:
-                # Non-Linear run: issue-anchored rules (title format, branch,
-                # Closes line) have no expected id; attribution still applies.
-                logger.info("PR standards gate: no linear issue in config — attribution check only")
-                attribution = check_attribution(f"{title}\n{body}")
-                violations = (attribution,) if attribution is not None else ()
+                logger.info("PR standards gate: no Linear issue in config — universal hygiene only")
+                violations = (*check_subject_independent(f"{title}\n{body}"), *commit_violations)
         except Exception:
             # Infrastructure fault in the gate itself must not permanently
             # block PR creation — log loudly and fail open (OPE-9 precedent).
