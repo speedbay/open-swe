@@ -431,10 +431,10 @@ def test_gates_go_ephemeral_when_clone_at_head_but_dirty(demo_gates, monkeypatch
     probe = repo / "demo" / "probe.txt"
     probe.write_text("base\n")
     subprocess.run(("git", "add", "."), cwd=repo, check=True)
-    subprocess.run(("git", "commit", "-qm", "base"), cwd=repo, check=True)
+    subprocess.run(("git", "commit", "--no-verify", "-qm", "base"), cwd=repo, check=True)
     subprocess.run(("git", "checkout", "-qb", "feature-x"), cwd=repo, check=True)
     probe.write_text("committed\n")
-    subprocess.run(("git", "commit", "-qam", "feature"), cwd=repo, check=True)
+    subprocess.run(("git", "commit", "--no-verify", "-qam", "feature"), cwd=repo, check=True)
     probe.write_text("dirty\n")
 
     observed = tmp_path / "observed.txt"
@@ -608,8 +608,8 @@ def test_integration_gate_failure_and_pass_through_real_container(monkeypatch) -
             sandbox.aexecute(
                 "cd /workspace/wh && git config user.email t@t && git config user.name t"
                 " && git checkout -qb main && echo old > demo/probe.txt && git add -A"
-                " && git commit -qm one && git checkout -qb feature"
-                " && echo new > demo/probe.txt && git commit -qam two"
+                " && git commit --no-verify -qm one && git checkout -qb feature"
+                " && echo new > demo/probe.txt && git commit --no-verify -qam two"
                 " && git checkout -q main"
             )
         )
