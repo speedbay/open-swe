@@ -68,16 +68,13 @@ def dashboard_gate_approval_url(thread_id: str, fingerprint: str) -> str | None:
     return f"{thread_url}?gateApproval={quote(fingerprint, safe='')}"
 
 
-def pr_metadata_digest(title: str, body: str, branch: str) -> str:
-    """Digest of the mutable PR metadata the hygiene rules evaluate.
+def pr_metadata_digest(*values: str) -> str:
+    """Digest every immutable and mutable field sent to GitHub.
 
-    Bound into the fingerprint so an approval covers the exact content a
-    human reviewed: hygiene violations are judged from title/body/branch,
-    which are request arguments — not part of the diff's git state — so
-    without this a retry with different content hitting the same rule id
-    would silently consume a prior approval.
+    Three-value legacy callers remain distinct, while target-aware callers pass
+    destination, ref, SHA, title, and final-body fields.
     """
-    encoded = json.dumps([title, body, branch], separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(values, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 

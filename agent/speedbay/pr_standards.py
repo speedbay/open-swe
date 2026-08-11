@@ -64,7 +64,7 @@ from ..utils.sandbox_state import get_sandbox_backend
 
 # Tunable settings live in config.py (OPE-31); both gates share the sandbox
 # workspace root and diff timeout through it.
-from .config import DIFF_TIMEOUT_SECONDS, HYGIENE_REMEDIATION_ATTEMPTS, WORKSPACE
+from .config import DIFF_TIMEOUT_SECONDS, HYGIENE_REMEDIATION_ATTEMPTS
 from .gate_approval import (
     GATE_APPROVAL_APPROVED,
     GATE_APPROVAL_CONSUMED,
@@ -77,6 +77,17 @@ from .gate_approval import (
     gate_fingerprint,
     mark_gate_approval_notified,
     pr_metadata_digest,
+)
+from .pr_target import (
+    PRTarget,
+    PRTargetError,
+    github_client,
+    resolve_target,
+    revalidate_head,
+    rewrite_request,
+    target_error_message,
+    target_scope,
+    verify_result,
 )
 from .quality_gates import _tool_args, _tool_call_id, _tool_name, resolve_repo_dir
 from .rules.atomicity import atomicity_findings, check_atomicity, parse_numstat
@@ -459,10 +470,35 @@ class PRStandardsMiddleware(AgentMiddleware):
             return blocked
         if _tool_name(request) != "open_pull_request":
             return await handler(request)
-        gate_block = await self._gate_open_pull_request(request)
-        if gate_block is not None:
-            return gate_block
-        return await handler(_force_ready_for_review(request))
+        args = _tool_args(request)
+        if not isinstance(args.get("owner"), str) or not isinstance(args.get("repo"), str):
+            gate_block = await self._gate_open_pull_request(request, None)
+            return (
+                gate_block
+                if gate_block is not None
+                else await handler(_force_ready_for_review(request))
+            )
+        try:
+            target = await self._prepare_target(request)
+        except PRTargetError as error:
+            return target_error_message(request, error)
+        prepared = rewrite_request(request, target)
+        try:
+            with target_scope(target):
+                gate_block = await self._gate_open_pull_request(prepared, target)
+                if gate_block is not None:
+                    return gate_block
+                from ..tools.open_pull_request import _resolve_pr_author_token
+
+                token, _kind = await _resolve_pr_author_token()
+                if not token:
+                    raise PRTargetError("No GitHub token is available to revalidate the PR target")
+                async with github_client(token) as client:
+                    await revalidate_head(target, client)
+                    result = await handler(prepared)
+                    return await verify_result(result, target, client)
+        except PRTargetError as error:
+            return target_error_message(request, error)
 
     @hook_config(can_jump_to=["end"])
     def before_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:  # noqa: ARG002
@@ -484,44 +520,66 @@ class PRStandardsMiddleware(AgentMiddleware):
         """Async mirror of ``before_model`` (the agent runs on the async path)."""
         return self.before_model(state, runtime)
 
+    async def _prepare_target(self, request: ToolCallRequest) -> PRTarget:
+        args = _tool_args(request)
+        configurable = get_config().get("configurable", {})
+        thread_id = configurable.get("thread_id")
+        if not thread_id:
+            raise PRTargetError("No thread id is available to resolve the PR target")
+        backend = await get_sandbox_backend(str(thread_id))
+        repo_dir = await resolve_repo_dir(backend, configurable)
+        if repo_dir is None:
+            raise PRTargetError("No sandbox clone is available for the routed repository")
+        from ..tools.open_pull_request import _maybe_append_references, _resolve_pr_author_token
+
+        token, _kind = await _resolve_pr_author_token()
+        if not token:
+            raise PRTargetError("No GitHub token is available to resolve the PR target")
+        owner = args.get("owner")
+        repo = args.get("repo")
+        body = args.get("body")
+        if not isinstance(owner, str) or not isinstance(repo, str) or not isinstance(body, str):
+            raise PRTargetError("open_pull_request requires owner, repo, and body")
+        async with github_client(token) as client:
+            final_body = await _maybe_append_references(client, token, owner, repo, body)
+            return await resolve_target(
+                args, configurable, backend, repo_dir, body=final_body, client=client
+            )
+
     async def _gate_open_pull_request(
-        self, request: ToolCallRequest
+        self, request: ToolCallRequest, target: PRTarget | None = None
     ) -> Command | ToolMessage | None:
         try:
-            args = _tool_args(request)
-            raw_title, raw_body = args.get("title"), args.get("body")
-            title = raw_title if isinstance(raw_title, str) else ""
-            body = raw_body if isinstance(raw_body, str) else ""
-            base = args.get("base")
-            base = base if isinstance(base, str) and base else "main"
-            head = args.get("head")
-            # `head` may be "owner:branch"; the sandbox only knows the branch.
-            branch = head.rpartition(":")[2] if isinstance(head, str) and head else ""
-            branch = branch or "HEAD"
-
             configurable = get_config().get("configurable", {})
             thread_id = configurable.get("thread_id")
             if not thread_id:
-                logger.warning("PR standards gate: no thread_id in run config — passing")
-                return None
+                raise PRTargetError("No thread id is available to gate the PR target")
             backend = await get_sandbox_backend(str(thread_id))
-            repo_dir = await resolve_repo_dir(backend, configurable)
-            if repo_dir is None:
-                logger.error(
-                    "PR standards gate: no repo clone found under %s (declared: %r) — passing",
-                    WORKSPACE,
-                    (configurable.get("repo") or {}).get("name"),
-                )
-                return None
-            diff = await _numstat(backend, base, branch, repo_dir)
+            if target is None:
+                args = _tool_args(request)
+                title = args.get("title") if isinstance(args.get("title"), str) else ""
+                body = args.get("body") if isinstance(args.get("body"), str) else ""
+                base = args.get("base") if isinstance(args.get("base"), str) else "main"
+                branch = args.get("head") if isinstance(args.get("head"), str) else "HEAD"
+                repo_dir = await resolve_repo_dir(backend, configurable)
+                if repo_dir is None:
+                    logger.error("PR standards gate: no repo clone found — passing")
+                    return None
+                diff = await _numstat(backend, base, branch, repo_dir)
+            else:
+                title, body, branch = target.title, target.body, target.head_branch
+                repo_dir = target.repo_dir
+                diff = await _numstat(backend, target.base_sha, target.head_sha, repo_dir)
             if diff is None:
                 logger.error(
-                    "PR standards gate: could not diff %r against base %r — passing",
+                    "PR standards gate: could not diff %r against target base %r — passing",
                     repo_dir,
-                    base,
+                    target.base_sha if target is not None else base,
                 )
                 return None
             numstat, truncated, base_sha, head_sha = diff
+            if target is not None and (base_sha, head_sha) != (target.base_sha, target.head_sha):
+                raise PRTargetError("PR standards diff did not resolve to the frozen target SHAs")
             verdict = check_atomicity(parse_numstat(numstat))
             if truncated:  # missing rows would undercount — fail closed
                 verdict = attrs.evolve(
@@ -641,7 +699,21 @@ class PRStandardsMiddleware(AgentMiddleware):
             findings=findings,
             disposition=DISPOSITION_HUMAN_DECISION if hard else DISPOSITION_ESCALATED,
             failed_rule_ids=[str(rule) for rule in failed_rule_ids],
-            metadata_digest=pr_metadata_digest(title, body, branch),
+            metadata_digest=(
+                pr_metadata_digest(
+                    target.owner,
+                    target.repo,
+                    target.base,
+                    target.base_sha,
+                    target.head_owner,
+                    target.head_branch,
+                    target.head_sha,
+                    title,
+                    body,
+                )
+                if target is not None
+                else pr_metadata_digest(title, body, branch)
+            ),
             evidence=_evidence_tail(numstat),
             advice=advice,
         )

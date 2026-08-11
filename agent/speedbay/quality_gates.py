@@ -46,6 +46,7 @@ from .config import (
     OUTPUT_TAIL_CHARS,
     WORKSPACE,
 )
+from .pr_target import current_target
 
 logger = logging.getLogger(__name__)
 _TIMEOUT_EXIT_CODE = 124  # docker exec timeout convention (see docker_sandbox)
@@ -581,42 +582,38 @@ class QualityGatesMiddleware(AgentMiddleware):
 
     async def _blocking_message(self, request: ToolCallRequest) -> ToolMessage | None:
         try:
-            args = _tool_args(request)
-            base = args.get("base")
-            if not isinstance(base, str) or not base:
-                base = "main"
-            head = args.get("head")
-            # `head` may be "owner:branch"; the sandbox only knows the branch.
-            head = head.rpartition(":")[2] if isinstance(head, str) and head else ""
-            head = head or "HEAD"
+            target = current_target()
             configurable = get_config().get("configurable", {})
             thread_id = configurable.get("thread_id")
             if not thread_id:
                 logger.warning("quality gates: no thread_id in run config — passing")
                 return None
             backend = await get_sandbox_backend(str(thread_id))
-            repo_dir = await resolve_repo_dir(backend, configurable)
-            if repo_dir is None:
-                logger.error(
-                    "quality gates: no repo clone found under %s (declared: %r) — passing",
-                    WORKSPACE,
-                    (configurable.get("repo") or {}).get("name"),
+            if target is None:
+                args = _tool_args(request)
+                base = args.get("base") if isinstance(args.get("base"), str) else "main"
+                head = args.get("head") if isinstance(args.get("head"), str) else "HEAD"
+                head = head.rpartition(":")[2]
+                repo_dir = await resolve_repo_dir(backend, configurable)
+                if repo_dir is None:
+                    logger.error("quality gates: no repo clone found under %s — passing", WORKSPACE)
+                    return None
+                commit = (
+                    await _resolve_head_commit(backend, repo_dir, head) if head != "HEAD" else head
                 )
-                return None
-            commit = head
-            if head != "HEAD":
-                commit = await _resolve_head_commit(backend, repo_dir, head)
                 if commit is None:
                     logger.error(
-                        "quality gates: could not resolve head %r in %r — passing",
-                        head,
-                        repo_dir,
+                        "quality gates: could not resolve head %r in %r — passing", head, repo_dir
                     )
                     return None
-            changed = await _changed_paths(backend, base, commit, repo_dir)
+                base_ref, head_ref = base, commit
+            else:
+                repo_dir, commit = target.repo_dir, target.head_sha
+                base_ref, head_ref = target.base_sha, target.head_sha
+            changed = await _changed_paths(backend, base_ref, head_ref, repo_dir)
             if changed is None:
                 logger.error(
-                    "quality gates: could not diff %r against base %r — passing", repo_dir, base
+                    "quality gates: could not diff %r against base %r — passing", repo_dir, base_ref
                 )
                 return None
             tree = await _materialize_gate_tree(backend, repo_dir, commit, str(thread_id))
