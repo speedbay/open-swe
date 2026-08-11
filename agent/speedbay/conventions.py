@@ -68,25 +68,31 @@ over the generic PR/commit guidance earlier in this prompt.
 `open-swe/<short-task-slug>` branch guidance earlier in this prompt. Branch
 reuse is unchanged — if a branch already exists for this thread, keep using it.
 
-**PR body and commit message body** use this exact structure. `Closes <TICKET>`
-must appear verbatim on its own line BEFORE the first `##` heading, and all four
-sections must be present, in this order, each non-empty:
+**PR body and commit message body** use the same four-section block. A PR body
+starts directly with `Closes <TICKET>`. A commit message is different: it starts
+with the ticket-prefixed subject, then a blank line, then that block. Complete
+commit-message example:
 
 ```
-Closes <TICKET>
+DOC-123: add lease expiry guard
+
+Closes DOC-123
 
 ## Why needed
-<the problem this solves, and why it is worth doing>
+Expired leases could remain active and block later work.
 
 ## Solved / fixed
-<what changed, concretely>
+Reject expired leases before using them.
 
 ## Workflow enabled / fixed
-<what a person or agent can now do that they could not before>
+Workers can safely acquire a replacement lease.
 
 ## Verification
-<how this was proven: commands run, results observed>
+- `uv run pytest -vvv tests/test_leases.py`
 ```
+
+`Closes <TICKET>` must appear verbatim on its own line BEFORE the first `##`
+heading, and all four sections must be present in that order and non-empty.
 
 Do NOT emit `## Description`, `## Release Note`, or `## Test Plan` sections.
 

@@ -30,8 +30,8 @@ The gate's response is split by the rule's declared severity
   grants a one-time, fingerprint-bound exemption; ``consume_gate_approval``
   spends it on the next gate attempt, and a new commit re-gates. A reject
   leaves the run ended.
-- **REMEDIABLE (hygiene)** — title/body/branch fixes are mechanical and never
-  touch the diff, so a hygiene-only failure returns an agent-recoverable
+- **REMEDIABLE (hygiene)** — PR-metadata and commit-message fixes are mechanical
+  and preserve file content, so a hygiene-only failure returns an agent-recoverable
   corrective ToolMessage embedding the required format: no approval card, no
   Linear post, the run continues. Budgeted at ``HYGIENE_REMEDIATION_ATTEMPTS``
   failed attempts per thread; exhaustion escalates the run through the HARD
@@ -81,7 +81,13 @@ from .gate_approval import (
 from .quality_gates import _tool_args, _tool_call_id, _tool_name, resolve_repo_dir
 from .rules.atomicity import atomicity_findings, check_atomicity, parse_numstat
 from .rules.findings import GateFinding, GateSeverity
-from .rules.hygiene import check_attribution, check_hygiene, hygiene_findings
+from .rules.hygiene import (
+    Violation,
+    check_attribution,
+    check_commit_message,
+    check_hygiene,
+    hygiene_findings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,13 +109,11 @@ DISPOSITION_ESCALATED = "escalated_after_remediation_budget"
 # corrective block so remediation is one-shot (the same contract already
 # rides the system prompt via SpeedbayConventionsMiddleware).
 _HYGIENE_FORMAT = (
-    "Required format — title: '<TEAM>-NNN: <imperative subject>' using the "
-    "triggering issue id; branch: '<team>-nnn-<slug>'; body: 'Closes "
-    "<TEAM>-NNN' before the first heading, then exactly these sections in "
+    "Required format — title or commit subject: '<TEAM>-NNN: <imperative subject>' "
+    "using the triggering issue id; branch: '<team>-nnn-<slug>'; PR or commit body: "
+    "'Closes <TEAM>-NNN' before the first heading, then exactly these sections in "
     "order, each non-empty: '## Why needed', '## Solved / fixed', "
-    "'## Workflow enabled / fixed', '## Verification'; no AI attribution "
-    "anywhere. Fix the PR title/body/branch and retry open_pull_request; do "
-    "not amend commits or change the diff."
+    "'## Workflow enabled / fixed', '## Verification'; no AI attribution anywhere."
 )
 
 _FALLBACK_ERROR = (
@@ -152,6 +156,35 @@ async def _numstat(
             output = getattr(response, "output", "") or ""
             return output, bool(getattr(response, "truncated", False)), base_sha, head_sha
     return None
+
+
+async def _commit_messages(
+    backend: Any, repo_dir: str, base_sha: str, head_sha: str
+) -> tuple[tuple[str, str], ...] | None:
+    """Return branch commit SHAs and full messages, or None when git log fails."""
+    try:
+        response = await backend.aexecute(
+            f"git -C {shlex.quote(repo_dir)} log --format=%H%x1f%B%x1e "
+            f"{shlex.quote(base_sha)}..{shlex.quote(head_sha)}",
+            timeout=DIFF_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        return None
+    if getattr(response, "exit_code", None) != 0 or getattr(response, "truncated", False):
+        return None
+    output = getattr(response, "output", "") or ""
+    if not output:
+        return ()
+    records = output.split("\x1e")
+    if records and not records[-1].strip():
+        records.pop()
+    commits: list[tuple[str, str]] = []
+    for record in records:
+        sha, separator, message = record.lstrip("\n").partition("\x1f")
+        if not separator or not sha.strip():
+            return None
+        commits.append((sha.strip(), message.rstrip("\n")))
+    return tuple(commits)
 
 
 async def _rev_parse(backend: Any, repo_dir: str, ref: str) -> str | None:
@@ -503,7 +536,24 @@ class PRStandardsMiddleware(AgentMiddleware):
 
             issue_id = _issue_id(configurable)
             if issue_id is not None:
-                violations = check_hygiene(title, body, branch, issue_id)
+                messages = await _commit_messages(backend, repo_dir, base_sha, head_sha)
+                if messages is None:
+                    logger.error(
+                        "PR standards gate: could not inspect commits for %r — "
+                        "commit hygiene passing",
+                        repo_dir,
+                    )
+                    commit_violations = ()
+                else:
+                    commit_violations = tuple(
+                        Violation(
+                            f"commit-{violation.rule}",
+                            f"commit {sha[:12]}: {violation.message}",
+                        )
+                        for sha, message in messages
+                        for violation in check_commit_message(message, issue_id)
+                    )
+                violations = (*check_hygiene(title, body, branch, issue_id), *commit_violations)
             else:
                 # Non-Linear run: issue-anchored rules (title format, branch,
                 # Closes line) have no expected id; attribution still applies.
@@ -549,6 +599,16 @@ class PRStandardsMiddleware(AgentMiddleware):
                     [f.rule for f in findings],
                 )
                 advice.append(_HYGIENE_FORMAT)
+                if any(v.rule.startswith("commit-") for v in violations):
+                    advice.append(
+                        "Amend or reword each named commit message, then push the corrected "
+                        "history and retry open_pull_request; do not change the file diff."
+                    )
+                else:
+                    advice.append(
+                        "Fix the PR title/body/branch and retry open_pull_request; do not "
+                        "amend commits or change the diff."
+                    )
                 advice.append(
                     f"This is failed attempt {attempts} of "
                     f"{HYGIENE_REMEDIATION_ATTEMPTS}; on the last failure the run "

@@ -116,13 +116,19 @@ async def _fail_handler(request: Any) -> Any:  # pragma: no cover - must not run
     raise AssertionError("handler must not run when the gate blocks")
 
 
-def _numstat(rows: str) -> FakeBackend:
+def _commit_log(message: str | None = None) -> str:
+    message = message or f"{ISSUE}: add the gate\n\n{_body()}"
+    return f"{'a' * 40}\x1f{message}\x1e"
+
+
+def _numstat(rows: str, *, commit_log: str | None = None) -> FakeBackend:
     # rev-parse resolves both refs to a pinned SHA first (the diff then runs
     # against SHAs); any 40-char value works for these unit fakes.
     return FakeBackend(
         {
             "rev-parse": FakeResponse(output="f" * 40),
             "diff --numstat": FakeResponse(output=rows),
+            "log --format": FakeResponse(output=commit_log or _commit_log()),
         }
     )
 
@@ -191,6 +197,34 @@ def test_compliant_diff_and_hygiene_open_normally(monkeypatch) -> None:
     assert diff.startswith("git -C /workspace/wh diff --numstat")
     # The diff runs against pinned SHAs (resolved first), never mutable refs.
     assert diff.endswith(f"{'f' * 40}...{'f' * 40}")
+
+
+def test_all_compliant_branch_commits_pass(monkeypatch) -> None:
+    first = f"{'a' * 40}\x1f{ISSUE}: add the gate\n\n{_body()}"
+    second = f"{'b' * 40}\x1f{ISSUE}: test the gate\n\n{_body()}"
+    backend = _numstat("1\t0\tagent/api.py\n", commit_log=f"{first}\x1e{second}\x1e")
+    _wire(monkeypatch, backend)
+    assert _run(PRStandardsMiddleware().awrap_tool_call(_request(), _pass_handler)) == "pr-opened"
+
+
+def test_bad_commit_headline_blocks_compliant_pr_metadata(monkeypatch) -> None:
+    backend = _numstat(
+        "1\t0\tagent/api.py\n",
+        commit_log=_commit_log(f"Closes {ISSUE}\n\n{_body()}"),
+    )
+    _wire(monkeypatch, backend)
+    payload = _payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler)))
+    assert payload["code"] == "pr_standards_hygiene_retry"
+    assert [finding["rule"] for finding in payload["findings"]] == ["commit-title-format"]
+    assert "Amend or reword each named commit message" in payload["error"]
+    assert "do not amend commits" not in payload["error"]
+
+
+@pytest.mark.parametrize("subject", ["Merge branch 'main'", f'Revert "{ISSUE}: add the gate"'])
+def test_generated_commit_subjects_are_exempt(monkeypatch, subject: str) -> None:
+    backend = _numstat("1\t0\tagent/api.py\n", commit_log=_commit_log(subject))
+    _wire(monkeypatch, backend)
+    assert _run(PRStandardsMiddleware().awrap_tool_call(_request(), _pass_handler)) == "pr-opened"
 
 
 def test_gate_passing_pr_is_forced_ready_for_review(monkeypatch) -> None:
@@ -451,6 +485,28 @@ def test_fails_open_when_diff_unavailable(monkeypatch, caplog) -> None:
         result = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _pass_handler))
     assert result == "pr-opened"
     assert "could not diff" in caplog.text
+
+
+def test_fails_open_when_commit_log_unavailable(monkeypatch, caplog) -> None:
+    backend = _numstat("1\t0\tagent/api.py\n")
+    backend.script["log --format"] = FakeResponse(output="fatal: bad range", exit_code=128)
+    _wire(monkeypatch, backend)
+    with caplog.at_level("ERROR"):
+        result = _run(PRStandardsMiddleware().awrap_tool_call(_request(), _pass_handler))
+    assert result == "pr-opened"
+    assert "could not inspect commits" in caplog.text
+
+
+def test_commit_log_failure_preserves_atomicity_verdict(monkeypatch) -> None:
+    backend = _numstat("400\t0\tagent/api.py\n")
+    backend.script["log --format"] = FakeResponse(output="fatal: bad range", exit_code=128)
+    _wire(monkeypatch, backend)
+    _stub_gate_store(monkeypatch)
+    payload = _halt_payload(
+        _run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler))
+    )
+    assert payload["atomicity"]["passed"] is False
+    assert [finding["rule"] for finding in payload["findings"]] == ["atomicity"]
 
 
 def test_fails_open_loudly_when_no_repo_clone_found(monkeypatch, caplog) -> None:

@@ -45,6 +45,7 @@ LINEAR_CLOSE_LINE = re.compile(
 # subject. Imperativeness is a semantic judgment left to the CRA/reviewers;
 # this pure rule enforces the prefix format and a non-empty subject.
 TITLE_LINE = re.compile(r"^([A-Z]+-\d+): \S")
+_COMMIT_SUBJECT_EXEMPT = re.compile(r"^(Merge|Revert)\b")
 
 # Provenance: agent-hygiene.md rule 5 / COMMIT-HYGIENE.md — attribution
 # trailers and authorship claims, anchored to agent identities so legitimate
@@ -174,6 +175,19 @@ def check_body_sections(body: str, issue_id: str) -> Violation | None:
         if not "\n".join(stripped[index + 1 : next_heading]).strip():
             return Violation("empty-section", f"'## {heading}' section is empty")
     return None
+
+
+def check_commit_message(message: str, issue_id: str) -> tuple[Violation, ...]:
+    """Validate one authored commit subject and body against the hygiene contract."""
+    subject, _, body = message.partition("\n")
+    if _COMMIT_SUBJECT_EXEMPT.match(subject):
+        return ()
+    checks = (
+        check_title(subject, issue_id),
+        check_attribution(message),
+        check_body_sections(body, issue_id),
+    )
+    return tuple(v for v in checks if v is not None)
 
 
 def check_hygiene(title: str, body: str, branch: str, issue_id: str) -> tuple[Violation, ...]:

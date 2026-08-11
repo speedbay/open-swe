@@ -25,6 +25,7 @@ from agent.speedbay.rules.hygiene import (
     check_attribution,
     check_body_sections,
     check_branch,
+    check_commit_message,
     check_hygiene,
     check_title,
 )
@@ -218,6 +219,17 @@ def test_body_missing_duplicate_empty_and_order() -> None:
     swapped = _body().replace("## Why needed\nThe gate needs rules.\n", "")
     swapped += "\n## Why needed\nThe gate needs rules.\n"
     assert _rule(check_body_sections(swapped, ISSUE)) == "section-order"
+
+
+def test_commit_message_contract_and_generated_subject_exemptions() -> None:
+    assert check_commit_message(f"{ISSUE}: port rules\n\n{_body()}", ISSUE) == ()
+    assert _rule(check_commit_message(f"Closes {ISSUE}\n\n{_body()}", ISSUE)[0]) == "title-format"
+    attribution = check_commit_message(
+        f"{ISSUE}: port rules\n\n{_body()}\nCo-authored-by: Claude <x@y>", ISSUE
+    )
+    assert [violation.rule for violation in attribution] == ["ai-attribution"]
+    assert check_commit_message("Merge branch 'main' into feature", ISSUE) == ()
+    assert check_commit_message(f'Revert "{ISSUE}: port rules"', ISSUE) == ()
 
 
 def test_check_hygiene_collects_named_violations() -> None:
