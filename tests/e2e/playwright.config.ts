@@ -5,23 +5,24 @@ const repoRoot = resolve(__dirname, "..", "..");
 const PORT = Number(process.env.E2E_PORT ?? 2024);
 const baseURL = `http://127.0.0.1:${PORT}`;
 
+// SPEEDBAY DEVIATION (OPE-113): optimized external compatibility CI policy.
 export default defineConfig({
   testDir: "./tests",
   globalSetup: "./global-setup.ts",
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,
+  failOnFlakyTests: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   timeout: 90_000,
   expect: { timeout: 60_000 },
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
     baseURL,
-    // Always capture the replayable artifacts: a trace (DOM snapshots, network,
-    // console, source — open with `npx playwright show-trace`) and a screen
-    // recording, plus a screenshot on failure. The CI job uploads them.
-    trace: "on",
-    video: "on",
+    // Capture replayable traces and videos only when a retry is needed; retain
+    // a screenshot for every final failure. The CI job uploads them.
+    trace: "on-first-retry",
+    video: "on-first-retry",
     screenshot: "only-on-failure",
     // The built UI ships a PWA service worker; block it so tests never hit a
     // stale cache and always see live API responses.
@@ -42,6 +43,6 @@ export default defineConfig({
     timeout: 180_000,
     // Deterministic busy window for the interrupt-debounce spec: the fake LLM
     // holds the first run open this long so follow-ups reliably land mid-run.
-    env: { ...process.env, E2E_BUSY_HOLD_SECONDS: "20" },
+    env: { ...process.env, E2E_BUSY_HOLD_SECONDS: "5" },
   },
 });

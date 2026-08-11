@@ -29,11 +29,10 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-# One shell command that does the whole git workflow. Each execute() runs in a
-# fresh shell rooted at the sandbox dir, so the clone+commit+push is bundled.
+# SPEEDBAY DEVIATION (OPE-113): keep normal compatibility flows fast and opt into
+# a slow implementation only for the dashboard scenario that observes a busy run.
 _IMPLEMENT_SCRIPT = f"""
 set -e
-sleep 8
 rm -rf repo
 git clone "$E2E_REMOTE" repo
 cd repo
@@ -148,6 +147,17 @@ def _reviewer_feedback(messages: list[BaseMessage]) -> str | None:
     if "approved" in text.lower() and idx != -1:
         return text[idx:].strip()
     return None
+
+
+def _implement_step(messages: list[BaseMessage]) -> AIMessage:
+    command = _IMPLEMENT_SCRIPT
+    humans = [m for m in messages if isinstance(m, HumanMessage)]
+    if humans and "E2E_SLOW_IMPLEMENT" in _text(humans[-1].content):
+        command = f"sleep 8\n{command}"
+    return AIMessage(
+        content="Setting up the repo and implementing the change.",
+        tool_calls=[{"name": "execute", "args": {"command": command}, "id": "call-impl"}],
+    )
 
 
 def _reply_step(messages: list[BaseMessage]) -> AIMessage:
@@ -283,12 +293,7 @@ SCRIPT_LIBRARY: dict[str, tuple[StepSpec, ...]] = {
             {"message": "On it!"},
             "call-ack",
         ),
-        _tool_step(
-            "Setting up the repo and implementing the change.",
-            "execute",
-            {"command": _IMPLEMENT_SCRIPT},
-            "call-impl",
-        ),
+        _dynamic_step(_implement_step),
         _tool_step(
             "Opening a pull request.",
             "open_pull_request",

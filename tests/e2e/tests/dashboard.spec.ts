@@ -21,9 +21,12 @@ async function openRunningThreadViaSlackLink(page: Page) {
   await page.goto("/mock/slack");
   await page.locator("#reset").click();
   await expect(page.locator("#thread")).toContainText("No messages yet");
+  // SPEEDBAY DEVIATION (OPE-113): only this busy-state assertion needs a slow implementation.
   await page
     .locator("#text")
-    .fill("<@U0BOT> please add a greet() helper and open a PR");
+    .fill(
+      "<@U0BOT> E2E_SLOW_IMPLEMENT please add a greet() helper and open a PR",
+    );
   await page.locator("#send").click();
 
   const webLink = page.locator('.msg.bot a[href*="/agents/"]').first();

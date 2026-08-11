@@ -1,5 +1,7 @@
 # Playwright E2E — the full Slack → implement → PR → reply flow
 
+<!-- SPEEDBAY DEVIATION (OPE-113): document fork compatibility CI and artifact policy. -->
+
 This drives the **whole happy path** through two mock UIs:
 
 1. A user asks Open SWE to implement something in a **mock Slack** thread.
@@ -71,10 +73,19 @@ Watch it in human time:
 SLOW_MO=700 npx playwright test --headed
 ```
 
+## Compatibility CI
+
+The `Upstream Playwright Compatibility` GitHub Actions workflow runs this serial
+suite nightly at 13:30 UTC, on manual dispatch, and on pull requests that change
+the E2E suite or its workflow. It is external Slack compatibility coverage, not
+ordinary Speed Bay PR CI or the production subscription-auth health check. CI
+uses `--fail-on-flaky-tests`, so a failed first attempt remains a failing signal
+even if its retry passes.
+
 ## Artifacts (replay a run)
 
-Every test records a **trace** (DOM-snapshot timeline + network + console + source)
-and a **video**; failures also get a screenshot. Locally they land in
+A test records a **trace** (DOM-snapshot timeline + network + console + source)
+and **video** on its first retry; failures also get a screenshot. They land in
 `test-results/<test>/` and are embedded in `playwright-report/`:
 
 ```bash
@@ -82,9 +93,10 @@ npx playwright show-report                       # browse runs; each has a Trace
 npx playwright show-trace test-results/<test>/trace.zip   # open one trace directly
 ```
 
-In CI the `Playwright E2E` job uploads both `playwright-report/` and
-`test-results/` as the **playwright-report** artifact on the run. Download it,
-then `npx playwright show-report <unzipped-dir>` (or drag a `trace.zip` onto
+In CI the `Playwright compatibility` job uploads both `playwright-report/` and
+`test-results/` as the seven-day **playwright-report** artifact on the run.
+Download it, then `npx playwright show-report <unzipped-dir>` (or drag a
+`trace.zip` onto
 <https://trace.playwright.dev>) to replay.
 
 Poke at it by hand (from the repo root):

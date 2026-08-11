@@ -81,11 +81,24 @@ test.describe("Open SWE full flow", () => {
   test("a message that does not mention the bot produces no run and no PR", async ({ page }) => {
     await page.locator("#mention").uncheck();
     await page.locator("#text").fill("just chatting with the team, nothing for the bot");
+    // SPEEDBAY DEVIATION (OPE-113): the webhook rejects this synchronously, so
+    // assert that verdict rather than sleeping to prove a negative.
+    const sendResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === "/mock/slack/send",
+    );
     await page.locator("#send").click();
+    const send = await sendResponsePromise;
+    expect(send.ok()).toBeTruthy();
+    await expect(send.json()).resolves.toMatchObject({
+      webhook: {
+        status: "ignored",
+        reason: "Not an app mention, DM, or plan reply",
+      },
+    });
 
     await expect(page.locator(".msg").filter({ hasText: "just chatting" })).toBeVisible();
-    // No agent activity: give the (non-)run a moment, then assert nothing came back.
-    await page.waitForTimeout(3000);
     await expect(page.locator(".msg.bot")).toHaveCount(0);
 
     const prs = await (await page.request.get("/mock/github/data")).json();
