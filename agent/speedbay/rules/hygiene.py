@@ -182,7 +182,11 @@ def check_commit_message(message: str, issue_id: str) -> tuple[Violation, ...]:
     subject, _, body = message.partition("\n")
     if _COMMIT_SUBJECT_EXEMPT.match(subject):
         return ()
-    checks = (check_title(subject, issue_id), check_body_sections(body, issue_id))
+    checks = (
+        check_title(subject, issue_id),
+        check_attribution(message),
+        check_body_sections(body, issue_id),
+    )
     return tuple(v for v in checks if v is not None)
 
 

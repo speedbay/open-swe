@@ -539,18 +539,20 @@ class PRStandardsMiddleware(AgentMiddleware):
                 messages = await _commit_messages(backend, repo_dir, base_sha, head_sha)
                 if messages is None:
                     logger.error(
-                        "PR standards gate: could not inspect commits for %r — passing",
+                        "PR standards gate: could not inspect commits for %r — "
+                        "commit hygiene passing",
                         repo_dir,
                     )
-                    return None
-                commit_violations = tuple(
-                    Violation(
-                        f"commit-{violation.rule}",
-                        f"commit {sha[:12]}: {violation.message}",
+                    commit_violations = ()
+                else:
+                    commit_violations = tuple(
+                        Violation(
+                            f"commit-{violation.rule}",
+                            f"commit {sha[:12]}: {violation.message}",
+                        )
+                        for sha, message in messages
+                        for violation in check_commit_message(message, issue_id)
                     )
-                    for sha, message in messages
-                    for violation in check_commit_message(message, issue_id)
-                )
                 violations = (*check_hygiene(title, body, branch, issue_id), *commit_violations)
             else:
                 # Non-Linear run: issue-anchored rules (title format, branch,

@@ -497,6 +497,18 @@ def test_fails_open_when_commit_log_unavailable(monkeypatch, caplog) -> None:
     assert "could not inspect commits" in caplog.text
 
 
+def test_commit_log_failure_preserves_atomicity_verdict(monkeypatch) -> None:
+    backend = _numstat("400\t0\tagent/api.py\n")
+    backend.script["log --format"] = FakeResponse(output="fatal: bad range", exit_code=128)
+    _wire(monkeypatch, backend)
+    _stub_gate_store(monkeypatch)
+    payload = _halt_payload(
+        _run(PRStandardsMiddleware().awrap_tool_call(_request(), _fail_handler))
+    )
+    assert payload["atomicity"]["passed"] is False
+    assert [finding["rule"] for finding in payload["findings"]] == ["atomicity"]
+
+
 def test_fails_open_loudly_when_no_repo_clone_found(monkeypatch, caplog) -> None:
     """The pre-OPE-59 production outage shape: no clone at the diffed path.
 
