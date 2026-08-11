@@ -6,6 +6,11 @@ from pathlib import Path
 import yaml
 
 DEPLOY_DIR = Path(__file__).resolve().parents[2] / "speedbay" / "deploy"
+SETUP_PATH = Path(__file__).resolve().parents[2] / "SETUP.md"
+
+
+def _setup() -> str:
+    return SETUP_PATH.read_text()
 
 
 def _unit(name: str) -> configparser.ConfigParser:
@@ -26,6 +31,75 @@ def test_backend_unit_supervises_run_dev_after_docker() -> None:
     assert unit["Service"]["StandardError"] == "inherit"
     assert unit["Unit"]["Requires"].split() == ["docker.service"]
     assert set(unit["Unit"]["After"].split()) == {"network-online.target", "docker.service"}
+
+
+def test_setup_initial_install_commands_run_as_checkout_owner() -> None:
+    setup = _setup()
+
+    assert (
+        """```bash
+sudo -Hu openswe git clone git@github.com:speedbay/open-swe.git /home/openswe/open-swe
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && uv sync'
+```"""
+        in setup
+    )
+    assert (
+        """```bash
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && docker image inspect openswe-sandbox:dev >/dev/null && echo image-present'
+```"""
+        in setup
+    )
+    assert (
+        """```bash
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe/ui && pnpm install --frozen-lockfile && pnpm build'
+```"""
+        in setup
+    )
+
+
+def test_setup_upgrade_commands_run_as_checkout_owner() -> None:
+    setup = _setup()
+
+    assert (
+        """```bash
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && git pull --ff-only && uv sync && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && cd ui && pnpm install --frozen-lockfile && pnpm build'
+sudo systemctl daemon-reload
+sudo systemctl restart openswe-backend.service openswe-tunnel.service openswe-dashboard.service
+```"""
+        in setup
+    )
+
+
+def test_setup_checkout_owner_has_documented_docker_access() -> None:
+    setup = _setup()
+
+    assert (
+        """```bash
+sudo usermod -aG docker openswe
+```"""
+        in setup
+    )
+    assert (
+        """```bash
+sudo -u openswe docker info >/dev/null && git --version && uv --version && node -v
+pnpm --version && cloudflared --version && caddy version
+```"""
+        in setup
+    )
+    assert (
+        """```bash
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && docker image inspect openswe-sandbox:dev >/dev/null && echo image-present'
+```"""
+        in setup
+    )
+    assert (
+        """```bash
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && git pull --ff-only && uv sync && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && cd ui && pnpm install --frozen-lockfile && pnpm build'
+sudo systemctl daemon-reload
+sudo systemctl restart openswe-backend.service openswe-tunnel.service openswe-dashboard.service
+```"""
+        in setup
+    )
 
 
 def test_tunnel_unit_supervises_named_tunnel() -> None:

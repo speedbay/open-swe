@@ -189,10 +189,11 @@ Expected: `env-ready`. Also confirm `ui/.env` contains the production
 
 ### B3. Build the sandbox image
 
+Run checkout mutations as the `openswe` deployment account; its Docker-group access
+from B1 permits the image build without changing checkout ownership:
+
 ```bash
-cd /home/openswe/open-swe
-docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker
-docker image inspect openswe-sandbox:dev >/dev/null && echo image-present
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && docker image inspect openswe-sandbox:dev >/dev/null && echo image-present'
 ```
 
 Expected: `image-present`.
@@ -200,9 +201,7 @@ Expected: `image-present`.
 ### B4. Build the dashboard
 
 ```bash
-cd /home/openswe/open-swe/ui
-pnpm install --frozen-lockfile
-pnpm build
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe/ui && pnpm install --frozen-lockfile && pnpm build'
 ```
 
 **Verify:** `test -f .output/public/_shell.html && echo dashboard-built` prints
@@ -252,11 +251,7 @@ output is in the journal.
 ### B7. Upgrade the deployment
 
 ```bash
-cd /home/openswe/open-swe
-git pull --ff-only
-uv sync
-docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker
-cd ui && pnpm install --frozen-lockfile && pnpm build
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && git pull --ff-only && uv sync && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && cd ui && pnpm install --frozen-lockfile && pnpm build'
 sudo systemctl daemon-reload
 sudo systemctl restart openswe-backend.service openswe-tunnel.service openswe-dashboard.service
 ```
