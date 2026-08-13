@@ -824,9 +824,19 @@ class PrepareAgentRunMiddleware(BasePrepareRunMiddleware):
             # The run is about to die with no sandbox; make sure the user hears
             # why rather than getting silence.
             clear_sandbox_backend(self._thread_id)
-            await post_sandbox_unreachable_notification(
-                self._config or {}, sandbox_id=exc.sandbox_id
-            )
+            # SPEEDBAY DEVIATION (OPE-132): notification delivery cannot replace the
+            # sandbox failure that governs recovery; see FORK.md.
+            try:
+                await post_sandbox_unreachable_notification(
+                    self._config or {}, sandbox_id=exc.sandbox_id
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send sandbox unreachable notification: "
+                    "source=agent thread_id=%s sandbox_id=%s",
+                    exc.thread_id,
+                    exc.sandbox_id,
+                )
             raise
         del github_token
         work_dir = await aresolve_sandbox_work_dir(sandbox_backend)
