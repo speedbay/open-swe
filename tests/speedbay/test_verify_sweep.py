@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from langgraph_sdk.schema import MultitaskStrategy
 
-from agent.speedbay import verify_sweep
+from agent.speedbay import verify_sweep, verify_trigger
 
 
 class _NotFound(Exception):
@@ -42,6 +42,15 @@ def _issue(n: int, *, age_hours: float = 5.0) -> dict[str, Any]:
         "identifier": f"OPE-{n}",
         "updatedAt": updated,
         "team": {"id": "team-1", "name": "Open SWE", "key": "OPE"},
+        "stateHistory": {
+            "nodes": [
+                {
+                    "startedAt": updated,
+                    "endedAt": None,
+                    "state": {"name": "ready-for-verify"},
+                }
+            ]
+        },
     }
 
 
@@ -54,6 +63,7 @@ async def _run_sweep(
     fail_ids: set[str] | None = None,
     dropped_ids: set[str] | None = None,
     conflict_ids: set[str] | None = None,
+    comments: dict[str, Any] | None = None,
 ) -> tuple[dict[str, int], list[str]]:
     """Run the public sweep with its Linear, LangGraph, and dispatch boundaries faked."""
     dispatched: list[str] = []
@@ -76,6 +86,12 @@ async def _run_sweep(
             }
         }
 
+    async def fake_comments(issue_id: str) -> dict[str, Any]:
+        result = (comments or {}).get(issue_id, {"comments": []})
+        if isinstance(result, Exception):
+            raise result
+        return result
+
     async def fake_dispatch(
         issue_data: dict[str, Any], *, multitask_strategy: MultitaskStrategy = "interrupt"
     ) -> bool:
@@ -90,6 +106,7 @@ async def _run_sweep(
         return True
 
     monkeypatch.setattr(verify_sweep, "_graphql_request", fake_graphql)
+    monkeypatch.setattr(verify_sweep, "get_issue_comments", fake_comments)
     monkeypatch.setattr(verify_sweep, "langgraph_client", lambda: _FakeClient(thread_responses))
     monkeypatch.setattr(verify_sweep.verify_trigger, "process_verify_dispatch", fake_dispatch)
 
@@ -164,6 +181,81 @@ async def test_thread_inspection_error_fails_closed_as_busy(
     counts, dispatched = await _run_sweep(monkeypatch, [_issue(1)], thread_error_ids={"issue-1"})
     assert dispatched == []
     assert counts["skipped_busy"] == 1
+
+
+@pytest.mark.parametrize("verdict", ("done", "incomplete"))
+async def test_current_cycle_terminal_verdict_is_not_redispatched_after_restart(
+    monkeypatch: pytest.MonkeyPatch, verdict: str
+) -> None:
+    issue = _issue(1)
+    monkeypatch.setattr(verify_trigger, "_seen_transitions", {issue["id"]: "previous-transition"})
+    verify_trigger._seen_transitions.clear()
+    counts, dispatched = await _run_sweep(
+        monkeypatch,
+        [issue],
+        comments={
+            issue["id"]: {
+                "comments": [
+                    {
+                        "createdAt": issue["stateHistory"]["nodes"][0]["startedAt"],
+                        "body": f"## Completion verification\nVerdict: {verdict}",
+                    }
+                ]
+            }
+        },
+    )
+    assert dispatched == []
+    assert counts == {"checked": 1, "skipped_busy": 0, "dispatched": 0, "errors": 0}
+
+
+@pytest.mark.parametrize(
+    ("body", "historical"),
+    (
+        (None, False),
+        ("unrelated", False),
+        ("## Completion verification", False),
+        ("Verdict: done", False),
+        ("## Completion verification\nVerdict: done\nVerdict: incomplete", False),
+        ("## Completion verification\nVerdict: other", False),
+        ("## Completion verification\nVerdict: done", True),
+    ),
+)
+async def test_nonterminal_or_historical_comments_preserve_redispatch(
+    monkeypatch: pytest.MonkeyPatch, body: str | None, historical: bool
+) -> None:
+    issue = _issue(1)
+    started_at = datetime.fromisoformat(issue["stateHistory"]["nodes"][0]["startedAt"])
+    comments = (
+        []
+        if body is None
+        else [
+            {
+                "createdAt": (started_at - timedelta(seconds=1)).isoformat()
+                if historical
+                else started_at.isoformat(),
+                "body": body,
+            }
+        ]
+    )
+    counts, dispatched = await _run_sweep(
+        monkeypatch, [issue], comments={issue["id"]: {"comments": comments}}
+    )
+    assert dispatched == ["OPE-1"]
+    assert counts == {"checked": 1, "skipped_busy": 0, "dispatched": 1, "errors": 0}
+
+
+async def test_comment_read_error_fails_closed_then_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issue = _issue(1)
+    first_counts, first_dispatched = await _run_sweep(
+        monkeypatch, [issue], comments={issue["id"]: {"error": "Linear unavailable"}}
+    )
+    second_counts, second_dispatched = await _run_sweep(monkeypatch, [issue])
+    assert first_dispatched == []
+    assert first_counts == {"checked": 1, "skipped_busy": 0, "dispatched": 0, "errors": 1}
+    assert second_dispatched == ["OPE-1"]
+    assert second_counts == {"checked": 1, "skipped_busy": 0, "dispatched": 1, "errors": 0}
 
 
 async def test_scheduler_routes_verify_sweep_task(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -22,7 +22,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..utils.linear import _graphql_request
+from ..utils.linear import _graphql_request, get_issue_comments
 from ..utils.thread_ops import langgraph_client
 from ..webhooks import common
 from . import verify_trigger
@@ -40,7 +40,13 @@ query StaleVerifyIssues($cutoff: DateTimeOrDuration!, $after: String) {
     after: $after
   ) {
     pageInfo { hasNextPage endCursor }
-    nodes { id identifier updatedAt team { id name key } }
+    nodes {
+      id
+      identifier
+      updatedAt
+      team { id name key }
+      stateHistory(last: 1) { nodes { startedAt endedAt state { name } } }
+    }
   }
 }
 """
@@ -61,6 +67,47 @@ async def _stale_verify_issues(cutoff_iso: str) -> list[dict[str, Any]]:
         if not info.get("hasNextPage"):
             return issues
         after = info.get("endCursor")
+
+
+def _current_ready_for_verify_started_at(issue: dict[str, Any]) -> str:
+    """The durable start time of the issue's current verify state span."""
+    spans = (issue.get("stateHistory") or {}).get("nodes")
+    if not isinstance(spans, list) or len(spans) != 1:
+        raise ValueError("missing current state span")
+    span = spans[0]
+    if not isinstance(span, dict):
+        raise ValueError("malformed current state span")
+    started_at = span.get("startedAt")
+    if (
+        span.get("endedAt") is not None
+        or (span.get("state") or {}).get("name") != "ready-for-verify"
+        or not isinstance(started_at, str)
+    ):
+        raise ValueError("current state span is not ready-for-verify")
+    datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    return started_at
+
+
+def _has_current_terminal_verdict(comments: list[Any], started_at: str) -> bool:
+    """Whether comments contain one contract-valid terminal report in this state span."""
+    started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    for comment in comments:
+        if not isinstance(comment, dict):
+            raise ValueError("malformed comment")
+        created_at = comment.get("createdAt")
+        body = comment.get("body")
+        if not isinstance(created_at, str) or not isinstance(body, str):
+            raise ValueError("malformed comment")
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        lines = body.splitlines()
+        verdicts = [line for line in lines if line.startswith("Verdict:")]
+        if (
+            created >= started
+            and "## Completion verification" in lines
+            and verdicts in (["Verdict: done"], ["Verdict: incomplete"])
+        ):
+            return True
+    return False
 
 
 async def _verify_thread_busy(issue_id: str) -> bool:
@@ -87,10 +134,10 @@ async def sweep_stale_verify_issues(*, min_age_seconds: int | None = None) -> di
     """Re-dispatch verification for issues stuck in ready-for-verify.
 
     Walks every issue whose state is ``ready-for-verify`` and whose
-    ``updatedAt`` is older than the cutoff, skips those with a busy verify
-    thread, and dispatches the rest with server-side conflict rejection so a
-    race cannot interrupt a run. Per-issue work is wrapped so one bad issue
-    never aborts the sweep.
+    ``updatedAt`` is older than the cutoff, skips busy verify threads and
+    current-cycle terminal reports, then dispatches the rest with server-side
+    conflict rejection so a race cannot interrupt a run. Per-issue work is
+    wrapped so one bad issue never aborts the sweep.
 
     Returns counts: ``{"checked", "skipped_busy", "dispatched", "errors"}``.
     """
@@ -107,6 +154,15 @@ async def sweep_stale_verify_issues(*, min_age_seconds: int | None = None) -> di
             if await _verify_thread_busy(issue["id"]):
                 logger.info("Sweep skipping %s: verify thread is busy", identifier)
                 skipped_busy += 1
+                continue
+            comments_result = await get_issue_comments(issue["id"])
+            if not isinstance(comments_result, dict) or "error" in comments_result:
+                raise ValueError("could not read issue comments")
+            comments = comments_result.get("comments")
+            if not isinstance(comments, list):
+                raise ValueError("malformed issue comments")
+            if _has_current_terminal_verdict(comments, _current_ready_for_verify_started_at(issue)):
+                logger.info("Sweep skipping %s: current cycle has a terminal verdict", identifier)
                 continue
             logger.info("Sweep re-dispatching verification for %s", identifier)
             try:
