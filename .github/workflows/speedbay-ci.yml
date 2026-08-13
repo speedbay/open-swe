@@ -59,3 +59,14 @@ jobs:
         # the openswe-sandbox:dev image or the GitHub App key its token mint
         # needs (validate_startup_config raises, module-level skipif).
         run: uv run pytest -vvv tests/speedbay
+
+  playwright-sandbox-browser-smoke:
+    name: Playwright sandbox browser smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build sandbox image
+        run: docker build --no-cache -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:ope-120 speedbay/docker
+      - name: Launch Playwright Chromium
+        run: docker run --rm --entrypoint sh openswe-sandbox:ope-120 -lc 'rm -f /tmp/ope-120.png; playwright screenshot --browser chromium about:blank /tmp/ope-120.png && test -s /tmp/ope-120.png'

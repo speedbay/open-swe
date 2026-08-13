@@ -190,13 +190,16 @@ Expected: `env-ready`. Also confirm `ui/.env` contains the production
 ### B3. Build the sandbox image
 
 Run checkout mutations as the `openswe` deployment account; its Docker-group access
-from B1 permits the image build without changing checkout ownership:
+from B1 permits the image build without changing checkout ownership. The image bakes
+warehouse-compatible Playwright Chromium into `/ms-playwright`; project setup (including
+`npm ci`) does not establish browser availability, so run the browser-launch smoke too:
 
 ```bash
-sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && docker image inspect openswe-sandbox:dev >/dev/null && echo image-present'
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && docker run --rm --entrypoint sh openswe-sandbox:dev -lc "rm -f /tmp/playwright-browser-smoke.png; playwright screenshot --browser chromium about:blank /tmp/playwright-browser-smoke.png && test -s /tmp/playwright-browser-smoke.png"'
 ```
 
-Expected: `image-present`.
+Expected: the **Playwright Chromium browser-launch smoke** exits successfully
+after writing a non-empty screenshot.
 
 ### B4. Build the dashboard
 
@@ -204,7 +207,7 @@ Expected: `image-present`.
 sudo -Hu openswe sh -c 'cd /home/openswe/open-swe/ui && pnpm install --frozen-lockfile && pnpm build'
 ```
 
-**Verify:** `test -f .output/public/_shell.html && echo dashboard-built` prints
+**Verify:** `test -f ui/.output/public/_shell.html && echo dashboard-built` prints
 `dashboard-built`.
 
 ### B5. Install and enable host services

@@ -45,7 +45,7 @@ sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && uv sync'
     )
     assert (
         """```bash
-sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && docker image inspect openswe-sandbox:dev >/dev/null && echo image-present'
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && docker run --rm --entrypoint sh openswe-sandbox:dev -lc "rm -f /tmp/playwright-browser-smoke.png; playwright screenshot --browser chromium about:blank /tmp/playwright-browser-smoke.png && test -s /tmp/playwright-browser-smoke.png"'
 ```"""
         in setup
     )
@@ -55,6 +55,7 @@ sudo -Hu openswe sh -c 'cd /home/openswe/open-swe/ui && pnpm install --frozen-lo
 ```"""
         in setup
     )
+    assert "`test -f ui/.output/public/_shell.html && echo dashboard-built`" in setup
 
 
 def test_setup_upgrade_commands_run_as_checkout_owner() -> None:
@@ -88,7 +89,7 @@ pnpm --version && cloudflared --version && caddy version
     )
     assert (
         """```bash
-sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && docker image inspect openswe-sandbox:dev >/dev/null && echo image-present'
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && docker run --rm --entrypoint sh openswe-sandbox:dev -lc "rm -f /tmp/playwright-browser-smoke.png; playwright screenshot --browser chromium about:blank /tmp/playwright-browser-smoke.png && test -s /tmp/playwright-browser-smoke.png"'
 ```"""
         in setup
     )
