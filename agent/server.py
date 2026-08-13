@@ -1133,13 +1133,13 @@ async def get_agent(config: RunnableConfig) -> Pregel:
                 SlackAssistantStatusMiddleware(),
                 TimeoutWrapupMiddleware(),
                 notify_step_limit_reached,
+                # SPEEDBAY DEVIATION (OPE-125): First is outermost, so this one
+                # deadline covers the complete primary/fallback/backoff sequence.
+                ModelCallTimeoutMiddleware(),
                 *fallback_middleware,
                 *plan_mode_middleware,
                 SanitizeFireworksMessagesMiddleware(),
                 SanitizeThinkingBlocksMiddleware(),
-                # Innermost, so the deadline covers the provider call itself and a
-                # timeout escalates outward to the fallback model.
-                ModelCallTimeoutMiddleware(),
             ],
         ),
     ).with_config(config)
