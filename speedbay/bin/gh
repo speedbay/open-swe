@@ -24,19 +24,16 @@ canonical_path() {
 
 SHIM="$(canonical_path "$HERE/gh")"
 REAL_GH=""
-remaining_path="$PATH"
-while :; do
-	case "$remaining_path" in
-	*:*) directory="${remaining_path%%:*}"; remaining_path="${remaining_path#*:}" ;;
-	*) directory="$remaining_path"; remaining_path="" ;;
-	esac
+remaining_path="${PATH:-}:"
+while [ -n "$remaining_path" ]; do
+	directory="${remaining_path%%:*}"
+	remaining_path="${remaining_path#*:}"
 	[ -n "$directory" ] || directory=.
 	candidate="$directory/gh"
 	if [ -f "$candidate" ] && [ -x "$candidate" ] && [ "$(canonical_path "$candidate")" != "$SHIM" ]; then
 		REAL_GH="$candidate"
 		break
 	fi
-	[ -n "$remaining_path" ] || break
 done
 
 if [ -z "$REAL_GH" ]; then

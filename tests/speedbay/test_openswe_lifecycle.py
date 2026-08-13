@@ -91,6 +91,36 @@ def test_gh_shim_uses_next_path_entry_without_recursing(tmp_path: pathlib.Path) 
     assert received.read_text().splitlines() == ["issue", "list"]
 
 
+def test_gh_shim_searches_the_current_directory_for_a_trailing_path_colon(
+    tmp_path: pathlib.Path,
+) -> None:
+    first = tmp_path / "first"
+    tools = tmp_path / "tools"
+    real = tmp_path / "real"
+    first.mkdir()
+    tools.mkdir()
+    real.mkdir()
+    (first / "gh").symlink_to(GH_SHIM)
+    for command in ("basename", "dirname", "readlink"):
+        command_path = next(
+            path
+            for path in os.environ["PATH"].split(":")
+            if (pathlib.Path(path) / command).is_file()
+        )
+        (tools / command).symlink_to(pathlib.Path(command_path) / command)
+    received = tmp_path / "received"
+    _stub(real / "gh", f'printf "%s\\n" "$@" > "{received}"')
+
+    subprocess.run(
+        [str(GH_SHIM), "issue", "list"],
+        cwd=real,
+        env={"GH_TOKEN": "real", "PATH": f"{first}:{tools}:"},
+        check=True,
+    )
+
+    assert received.read_text().splitlines() == ["issue", "list"]
+
+
 def test_missing_docker_executable_is_a_clean_start_failure(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
