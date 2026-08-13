@@ -2,13 +2,43 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from fastapi import HTTPException
 
+from agent.speedbay import gate_approval as ga
 from agent.speedbay import gate_approval_api
 
 FP = "fp-1"
 OWNER_SESSION = {"sub": "owner", "email": "owner@example.com"}
+
+
+class FakeThreads:
+    def __init__(self, metadata: dict[str, dict[str, Any]]) -> None:
+        self.metadata = metadata
+        self.updates: list[tuple[str, dict[str, Any]]] = []
+
+    async def get(self, thread_id: str) -> dict[str, Any]:
+        return {"metadata": dict(self.metadata.get(thread_id, {}))}
+
+    async def update(self, *, thread_id: str, metadata: dict[str, Any]) -> None:
+        self.metadata.setdefault(thread_id, {}).update(metadata)
+        self.updates.append((thread_id, metadata))
+
+
+class FakeLangGraphClient:
+    def __init__(self, threads: FakeThreads) -> None:
+        self.threads = threads
+
+
+def _wire_real_store(monkeypatch, threads: FakeThreads) -> None:
+    client = FakeLangGraphClient(threads)
+    monkeypatch.setattr(ga, "get_client", lambda: cast(Any, client))
+    monkeypatch.setattr(gate_approval_api, "decide_gate_approval", ga.decide_gate_approval)
+    monkeypatch.setattr(
+        gate_approval_api, "restore_gate_approval_pending", ga.restore_gate_approval_pending
+    )
 
 
 def _pending_record(**overrides: object) -> dict:
@@ -91,6 +121,70 @@ async def test_approve_decides_and_dispatches_followup(monkeypatch) -> None:
     assert dispatched[0]["plan_mode"] is False
     assert "open_pull_request" in dispatched[0]["text"]
     assert "do not amend commits" in dispatched[0]["text"]  # same diff, no alteration
+
+
+async def test_approve_dispatch_failure_restores_pending_for_retry(monkeypatch) -> None:
+    _wire_thread(monkeypatch)
+    unrelated = _pending_record(fingerprint="unrelated", requested_at="2026-08-02T00:00:00+00:00")
+    threads = FakeThreads(
+        {
+            "t-1": {
+                ga.GATE_APPROVALS_KEY: {
+                    FP: _pending_record(),
+                    "unrelated": unrelated,
+                }
+            }
+        }
+    )
+    _wire_real_store(monkeypatch, threads)
+    dispatched: list[str] = []
+
+    async def scripted_dispatch(
+        thread_id: str, metadata: dict, text: str, *, plan_mode: bool
+    ) -> None:
+        dispatched.append(thread_id)
+        if len(dispatched) == 1:
+            raise RuntimeError("dispatch failed")
+
+    monkeypatch.setattr(gate_approval_api, "_dispatch_followup", scripted_dispatch)
+
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        await gate_approval_api.approve_gate_breach("t-1", FP, session=OWNER_SESSION)
+
+    approvals = threads.metadata["t-1"][ga.GATE_APPROVALS_KEY]
+    assert approvals[FP]["status"] == ga.GATE_APPROVAL_PENDING
+    assert "decided_at" not in approvals[FP]
+    assert "decided_by" not in approvals[FP]
+    assert approvals["unrelated"] == unrelated
+
+    response = await gate_approval_api.approve_gate_breach("t-1", FP, session=OWNER_SESSION)
+    assert response == {"status": "approved", "fingerprint": FP}
+    assert dispatched == ["t-1", "t-1"]
+    assert threads.metadata["t-1"][ga.GATE_APPROVALS_KEY][FP]["status"] == ga.GATE_APPROVAL_APPROVED
+
+
+async def test_approve_success_stays_approved_and_does_not_redispatch(monkeypatch) -> None:
+    _wire_thread(monkeypatch)
+    threads = FakeThreads({"t-1": {ga.GATE_APPROVALS_KEY: {FP: _pending_record()}}})
+    _wire_real_store(monkeypatch, threads)
+    dispatched: list[str] = []
+
+    async def successful_dispatch(
+        thread_id: str, metadata: dict, text: str, *, plan_mode: bool
+    ) -> None:
+        dispatched.append(thread_id)
+
+    monkeypatch.setattr(gate_approval_api, "_dispatch_followup", successful_dispatch)
+
+    assert await gate_approval_api.approve_gate_breach("t-1", FP, session=OWNER_SESSION) == {
+        "status": "approved",
+        "fingerprint": FP,
+    }
+    assert threads.metadata["t-1"][ga.GATE_APPROVALS_KEY][FP]["status"] == ga.GATE_APPROVAL_APPROVED
+    with pytest.raises(HTTPException) as exc_info:
+        await gate_approval_api.approve_gate_breach("t-1", FP, session=OWNER_SESSION)
+    assert exc_info.value.status_code == 404
+    assert dispatched == ["t-1"]
 
 
 async def test_approve_unknown_fingerprint_404s(monkeypatch) -> None:
