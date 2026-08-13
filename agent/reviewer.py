@@ -1018,9 +1018,19 @@ class PrepareReviewerRunMiddleware(BasePrepareRunMiddleware):
         except SandboxUnreachableError as exc:
             # Replacement was allowed and still failed, so this run dies without a
             # sandbox. Say so on the PR instead of leaving it looking unreviewed.
-            await post_sandbox_unreachable_notification(
-                self._config or {}, sandbox_id=exc.sandbox_id, replacement_attempted=True
-            )
+            # SPEEDBAY DEVIATION (OPE-132): notification delivery cannot replace the
+            # sandbox failure that governs recovery; see FORK.md.
+            try:
+                await post_sandbox_unreachable_notification(
+                    self._config or {}, sandbox_id=exc.sandbox_id, replacement_attempted=True
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send sandbox unreachable notification: "
+                    "source=reviewer thread_id=%s sandbox_id=%s",
+                    exc.thread_id,
+                    exc.sandbox_id,
+                )
             raise
         work_dir = await aresolve_sandbox_work_dir(sandbox_backend)
 
