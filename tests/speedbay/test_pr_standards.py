@@ -96,12 +96,15 @@ def _wire(
     backend: FakeBackend,
     *,
     issue: str | None = ISSUE,
-    repo: dict[str, str] | None = None,
+    repo: Any = None,
 ) -> None:
     async def fake_get_backend(thread_id: str):
         return backend
 
-    configurable: dict[str, Any] = {"thread_id": "t-1", "repo": repo or {"name": "wh"}}
+    configurable: dict[str, Any] = {
+        "thread_id": "t-1",
+        "repo": repo if repo is not None else {"name": "wh"},
+    }
     if issue is not None:
         configurable["linear_issue"] = {"identifier": issue}
     monkeypatch.setattr(fg, "get_sandbox_backend", fake_get_backend)
@@ -222,6 +225,19 @@ def test_bad_commit_headline_blocks_compliant_pr_metadata(monkeypatch) -> None:
     assert [finding["rule"] for finding in payload["findings"]] == ["commit-title-format"]
     assert "Amend or reword each named commit message" in payload["error"]
     assert "do not amend commits" not in payload["error"]
+
+
+def test_non_dict_repo_config_keeps_hygiene_enforced(monkeypatch) -> None:
+    backend = _numstat("1\t0\tagent/api.py\n")
+    backend.script["ls -d"] = FakeResponse(output="/workspace/wh/.git\n")
+    _wire(monkeypatch, backend, repo="malformed")
+
+    payload = _payload(
+        _run(PRStandardsMiddleware().awrap_tool_call(_request(title="update stuff"), _fail_handler))
+    )
+
+    assert payload["code"] == "pr_standards_hygiene_retry"
+    assert [finding["rule"] for finding in payload["findings"]] == ["title-format"]
 
 
 @pytest.mark.parametrize("subject", ["Merge branch 'main'", f'Revert "{ISSUE}: add the gate"'])

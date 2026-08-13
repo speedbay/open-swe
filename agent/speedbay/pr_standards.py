@@ -605,14 +605,18 @@ class PRStandardsMiddleware(AgentMiddleware):
                 )
                 commit_violations = ()
             else:
-                repo = configurable.get("repo") or {}
+                repo = configurable.get("repo")
                 upstream_commits = await _upstream_sync_commits(
                     backend,
                     repo_dir,
                     base_sha,
                     head_sha,
                     frozenset(sha for sha, _ in messages),
-                    enabled=repo.get("owner") == "speedbay" and repo.get("name") == "open-swe",
+                    enabled=(
+                        isinstance(repo, dict)
+                        and repo.get("owner") == "speedbay"
+                        and repo.get("name") == "open-swe"
+                    ),
                 )
                 commit_violations = tuple(
                     Violation(f"commit-{violation.rule}", f"commit {sha[:12]}: {violation.message}")
