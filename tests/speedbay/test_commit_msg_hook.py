@@ -9,6 +9,8 @@ tests/speedbay/test_docker_sandbox.py::test_commit_msg_hook_strips_attribution.
 import pathlib
 import subprocess
 
+import pytest
+
 HOOK = pathlib.Path(__file__).resolve().parents[2] / "speedbay" / "githooks" / "commit-msg"
 
 
@@ -36,11 +38,20 @@ def test_prose_mention_of_closes_does_not_count(tmp_path: pathlib.Path) -> None:
     assert proc.returncode == 1
 
 
-def test_attribution_still_stripped_when_compliant(tmp_path: pathlib.Path) -> None:
-    proc, out = _run(
-        tmp_path,
-        "OPE-1: subject\n\nCloses OPE-1\n\nCo-authored-by: open-swe[bot] <x@y>\n",
-    )
+@pytest.mark.parametrize(
+    ("line", "present"),
+    [
+        ("Co-authored-by: open-swe[bot] <open-swe@users.noreply.github.com>", False),
+        ("Generated with [Open SWE](https://github.com/langchain-ai/open-swe)", False),
+        ("Made by [Open SWE](https://github.com/langchain-ai/open-swe)", False),
+        ("Co-authored-by: Open-Sweeney <dev@example.com>", True),
+        ("Generated with Open-Sweeney", True),
+        ("Made by Open-Sweeney", True),
+    ],
+)
+def test_hook_rewrites_only_exact_open_swe_attribution(
+    tmp_path: pathlib.Path, line: str, *, present: bool
+) -> None:
+    proc, out = _run(tmp_path, f"OPE-1: subject\n\nCloses OPE-1\n\n{line}\n")
     assert proc.returncode == 0
-    assert "Co-authored-by" not in out
-    assert "Closes OPE-1" in out
+    assert (line in out) is present

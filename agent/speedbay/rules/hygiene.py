@@ -30,10 +30,11 @@ AUTO_CLOSE_HYGIENE_LINE = re.compile(
     r"^\s*(close[ds]?|fix(es|ed)?|resolve[ds]?)(:\s*|\s+)([\w.-]+/[\w.-]+#\d+|#\d+)", re.I
 )
 
-# Provenance: hygiene-sections.mjs NON_CLOSING_REF_LINE — Linear treats `refs`
-# as a non-closing magic word that SUPPRESSES the on-merge status automation
-# (verified empirically in FRG-592).
-NON_CLOSING_REF_LINE = re.compile(r"^\s*refs?(:\s*|\s+)[A-Za-z]+-\d+", re.I)
+# Provenance: COMMIT-HYGIENE.md — Linear treats these as non-closing magic
+# words that suppress the on-merge status automation.
+NON_CLOSING_REF_LINE = re.compile(
+    r"^\s*(?:refs?|part\s+of|related\s+to)(?::\s*|\s+)[A-Za-z]+-\d+\s*$", re.I
+)
 
 # Provenance: hygiene-sections.mjs LINEAR_CLOSE_LINE — only the canonical
 # `Closes <issueId>` line may use a closing keyword.
@@ -45,7 +46,7 @@ LINEAR_CLOSE_LINE = re.compile(
 # subject. Imperativeness is a semantic judgment left to the CRA/reviewers;
 # this pure rule enforces the prefix format and a non-empty subject.
 TITLE_LINE = re.compile(r"^([A-Z]+-\d+): \S")
-_COMMIT_SUBJECT_EXEMPT = re.compile(r"^(Merge|Revert)\b")
+OBSERVABLE_STAGING = re.compile(r"\bgit\s+add\s+-A\b", re.I)
 
 # Provenance: agent-hygiene.md rule 5 / COMMIT-HYGIENE.md — attribution
 # trailers and authorship claims, anchored to agent identities so legitimate
@@ -103,6 +104,20 @@ def check_attribution(text: str) -> Violation | None:
         if AI_ATTRIBUTION_LINE.search(line):
             return Violation("ai-attribution", f"no AI attribution allowed; found {line.strip()!r}")
     return None
+
+
+def check_observable_staging(text: str) -> Violation | None:
+    """Reject observable blanket staging without inferring unobservable commands."""
+    match = OBSERVABLE_STAGING.search(text)
+    if match is not None:
+        return Violation("explicit-staging", "no observable 'git add -A' allowed")
+    return None
+
+
+def check_subject_independent(text: str) -> tuple[Violation, ...]:
+    """Validate rules that apply even when no Linear issue is available."""
+    checks = (check_attribution(text), check_observable_staging(text))
+    return tuple(violation for violation in checks if violation is not None)
 
 
 def check_body_sections(body: str, issue_id: str) -> Violation | None:
@@ -177,17 +192,19 @@ def check_body_sections(body: str, issue_id: str) -> Violation | None:
     return None
 
 
-def check_commit_message(message: str, issue_id: str) -> tuple[Violation, ...]:
-    """Validate one authored commit subject and body against the hygiene contract."""
+def check_commit_message(
+    message: str, issue_id: str | None, *, exempt_rules: frozenset[str] = frozenset()
+) -> tuple[Violation, ...]:
+    """Validate one commit, exempting only proven upstream rule ids."""
     subject, _, body = message.partition("\n")
-    if _COMMIT_SUBJECT_EXEMPT.match(subject):
-        return ()
-    checks = (
-        check_title(subject, issue_id),
-        check_attribution(message),
-        check_body_sections(body, issue_id),
-    )
-    return tuple(v for v in checks if v is not None)
+    checks = [*check_subject_independent(message)]
+    if issue_id is not None:
+        checks.extend(
+            violation
+            for violation in (check_title(subject, issue_id), check_body_sections(body, issue_id))
+            if violation is not None
+        )
+    return tuple(violation for violation in checks if violation.rule not in exempt_rules)
 
 
 def check_hygiene(title: str, body: str, branch: str, issue_id: str) -> tuple[Violation, ...]:
@@ -199,7 +216,7 @@ def check_hygiene(title: str, body: str, branch: str, issue_id: str) -> tuple[Vi
     checks = (
         check_title(title, issue_id),
         check_branch(branch, issue_id),
-        check_attribution(f"{title}\n{body}"),
+        *check_subject_independent(f"{title}\n{body}"),
         check_body_sections(body, issue_id),
     )
     return tuple(v for v in checks if v is not None)
