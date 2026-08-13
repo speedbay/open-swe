@@ -27,7 +27,7 @@ export function GateApprovalCard({
 }) {
   const query = useGateApprovals(threadId, { pollWhileActive })
   const decision = useGateApprovalDecision(threadId)
-  const [error, setError] = useState<string | null>(null)
+  const [errors, setErrors] = useState<Record<string, string>>({})
   const approvals = useMemo(
     () => pending(query.data?.approvals),
     [query.data?.approvals]
@@ -37,14 +37,20 @@ export function GateApprovalCard({
 
   const isOwner = query.data?.isOwner === true
   const decide = async (approval: GateApproval, kind: "approve" | "reject") => {
-    setError(null)
+    setErrors((current) => {
+      const { [approval.fingerprint]: _, ...remaining } = current
+      return remaining
+    })
     try {
       await decision.mutateAsync({
         fingerprint: approval.fingerprint,
         decision: kind,
       })
     } catch (e) {
-      setError((e as Error).message)
+      setErrors((current) => ({
+        ...current,
+        [approval.fingerprint]: (e as Error).message,
+      }))
     }
   }
 
@@ -66,7 +72,7 @@ export function GateApprovalCard({
                     PR-standards gate breach — approval required
                   </div>
                   <p className="text-xs text-[var(--ui-text-dim)]">
-                    {approval.issueId ?? "Linear issue"} ·{" "}
+                    {approval.issueIdentifier ?? "Linear issue"} ·{" "}
                     {shortSha(approval.baseSha)} → {shortSha(approval.headSha)}
                   </p>
                   <p className="font-mono text-[0.68rem] break-all text-[var(--ui-text-dim)]">
@@ -95,9 +101,9 @@ export function GateApprovalCard({
                   Only the thread owner can approve or reject this gate breach.
                 </p>
               )}
-              {error && (
+              {errors[approval.fingerprint] && (
                 <p className="mt-3 text-xs text-[color:var(--ui-danger)]">
-                  {error}
+                  {errors[approval.fingerprint]}
                 </p>
               )}
 

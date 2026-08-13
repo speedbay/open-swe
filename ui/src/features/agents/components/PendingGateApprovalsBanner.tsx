@@ -31,7 +31,7 @@ export function PendingGateApprovalsBanner() {
               params={{ threadId: approval.threadId }}
               className="font-medium underline underline-offset-2"
             >
-              {approval.issueId ?? "gate breach"}
+              {approval.issueIdentifier ?? "gate breach"}
             </Link>{" "}
             · {approval.failedRuleIds.join(", ")} · raw LOC{" "}
             {approval.diffStats.rawLoc}
