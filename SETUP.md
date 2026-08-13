@@ -189,14 +189,13 @@ Expected: `env-ready`. Also confirm `ui/.env` contains the production
 
 ### B3. Build the sandbox image
 
-The image bakes warehouse-compatible Playwright Chromium into `/ms-playwright`.
-Project setup (including `npm ci`) does not establish browser availability; the
-image build and the following browser-launch smoke do.
+Run checkout mutations as the `openswe` deployment account; its Docker-group access
+from B1 permits the image build without changing checkout ownership. The image bakes
+warehouse-compatible Playwright Chromium into `/ms-playwright`; project setup (including
+`npm ci`) does not establish browser availability, so run the browser-launch smoke too:
 
 ```bash
-cd /home/openswe/open-swe
-docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker
-docker run --rm --entrypoint sh openswe-sandbox:dev -lc 'rm -f /tmp/playwright-browser-smoke.png; playwright screenshot --browser chromium about:blank /tmp/playwright-browser-smoke.png && test -s /tmp/playwright-browser-smoke.png'
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && docker run --rm --entrypoint sh openswe-sandbox:dev -lc "rm -f /tmp/playwright-browser-smoke.png; playwright screenshot --browser chromium about:blank /tmp/playwright-browser-smoke.png && test -s /tmp/playwright-browser-smoke.png"'
 ```
 
 Expected: the **Playwright Chromium browser-launch smoke** exits successfully
@@ -205,12 +204,10 @@ after writing a non-empty screenshot.
 ### B4. Build the dashboard
 
 ```bash
-cd /home/openswe/open-swe/ui
-pnpm install --frozen-lockfile
-pnpm build
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe/ui && pnpm install --frozen-lockfile && pnpm build'
 ```
 
-**Verify:** `test -f .output/public/_shell.html && echo dashboard-built` prints
+**Verify:** `test -f ui/.output/public/_shell.html && echo dashboard-built` prints
 `dashboard-built`.
 
 ### B5. Install and enable host services
@@ -257,11 +254,7 @@ output is in the journal.
 ### B7. Upgrade the deployment
 
 ```bash
-cd /home/openswe/open-swe
-git pull --ff-only
-uv sync
-docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker
-cd ui && pnpm install --frozen-lockfile && pnpm build
+sudo -Hu openswe sh -c 'cd /home/openswe/open-swe && git pull --ff-only && uv sync && docker build -f speedbay/docker/Dockerfile.sandbox -t openswe-sandbox:dev speedbay/docker && cd ui && pnpm install --frozen-lockfile && pnpm build'
 sudo systemctl daemon-reload
 sudo systemctl restart openswe-backend.service openswe-tunnel.service openswe-dashboard.service
 ```
