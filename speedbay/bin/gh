@@ -7,8 +7,39 @@
 # sits earlier on PATH than the real gh and swaps in an installation token.
 set -eu
 
-HERE="$(cd "$(dirname "$0")" && pwd)"
-REAL_GH=/opt/homebrew/bin/gh
+HERE="$(cd -P "$(dirname "$0")" && pwd)"
+
+canonical_path() {
+	path="$1"
+	while [ -L "$path" ]; do
+		directory="$(cd -P "$(dirname "$path")" && pwd)"
+		link="$(readlink "$path")"
+		case "$link" in
+		/*) path="$link" ;;
+		*) path="$directory/$link" ;;
+		esac
+	done
+	printf '%s/%s\n' "$(cd -P "$(dirname "$path")" && pwd)" "$(basename "$path")"
+}
+
+SHIM="$(canonical_path "$HERE/gh")"
+REAL_GH=""
+remaining_path="${PATH:-}:"
+while [ -n "$remaining_path" ]; do
+	directory="${remaining_path%%:*}"
+	remaining_path="${remaining_path#*:}"
+	[ -n "$directory" ] || directory=.
+	candidate="$directory/gh"
+	if [ -f "$candidate" ] && [ -x "$candidate" ] && [ "$(canonical_path "$candidate")" != "$SHIM" ]; then
+		REAL_GH="$candidate"
+		break
+	fi
+done
+
+if [ -z "$REAL_GH" ]; then
+	echo "FAIL: no real gh executable found on PATH" >&2
+	exit 127
+fi
 
 # Mint only when the token is absent, empty, or the prompt's literal "dummy".
 # A deliberately supplied real GH_TOKEN passes through untouched — the agent

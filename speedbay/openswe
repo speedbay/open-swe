@@ -88,10 +88,10 @@ def _wait_for(url: str, attempts: int) -> bool:
     return False
 
 
-def _spawn(cmd: list[str], log_path: str) -> None:
+def _spawn(cmd: list[str], log_path: str) -> subprocess.Popen[bytes]:
     """Detach ``cmd`` with output to ``log_path``; survives this script exiting."""
     with open(log_path, "w") as log:
-        subprocess.Popen(
+        return subprocess.Popen(
             cmd,
             cwd=REPO,
             stdout=log,
@@ -99,6 +99,15 @@ def _spawn(cmd: list[str], log_path: str) -> None:
             stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
+
+
+def _rollback(processes: list[subprocess.Popen[bytes]]) -> None:
+    _terminate([process.pid for process in processes])
+    for process in processes:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def _tail(log_path: str, lines: int = 5) -> str:
@@ -111,8 +120,15 @@ def _tail(log_path: str, lines: int = 5) -> str:
         return f"(no log at {log_path})"
 
 
+def _docker_info() -> bool:
+    try:
+        return subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
 def ensure_docker_daemon() -> bool:
-    if subprocess.run(["docker", "info"], capture_output=True).returncode == 0:
+    if _docker_info():
         return True
     if not shutil.which("colima"):
         return False
@@ -122,7 +138,7 @@ def ensure_docker_daemon() -> bool:
         subprocess.run(["colima", "start"], capture_output=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         pass
-    return subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+    return _docker_info()
 
 
 def start() -> int:
@@ -135,21 +151,33 @@ def start() -> int:
         )
         return 1
 
+    processes: list[subprocess.Popen[bytes]] = []
     print("starting backend...")
-    _spawn([str(REPO / "speedbay" / "run-dev.sh")], BACKEND_LOG)
+    try:
+        processes.append(_spawn([str(REPO / "speedbay" / "run-dev.sh")], BACKEND_LOG))
+    except OSError as error:
+        print(f"FAIL: backend could not start: {error}", file=sys.stderr)
+        return 1
     if not _wait_for(LOCAL_URL, 30):
         print(f"FAIL: backend not healthy after 60s — tail {BACKEND_LOG}", file=sys.stderr)
         print(_tail(BACKEND_LOG), file=sys.stderr)
-        _terminate(backend_pids())  # don't leave a half-started backend blocking retry
+        _rollback(processes)
         return 1
     print(f"backend healthy: {LOCAL_URL}")
 
     print("starting tunnel...")
-    _spawn(["cloudflared", "tunnel", "run", "--url", BACKEND_URL, TUNNEL_NAME], TUNNEL_LOG)
+    try:
+        processes.append(
+            _spawn(["cloudflared", "tunnel", "run", "--url", BACKEND_URL, TUNNEL_NAME], TUNNEL_LOG)
+        )
+    except OSError as error:
+        print(f"FAIL: tunnel could not start: {error}", file=sys.stderr)
+        _rollback(processes)
+        return 1
     if not _wait_for(PUBLIC_URL, 15):
         print(f"FAIL: public URL not healthy after 30s — tail {TUNNEL_LOG}", file=sys.stderr)
         print(_tail(TUNNEL_LOG), file=sys.stderr)
-        _terminate(backend_pids() + tunnel_pids())  # clean slate so the next start can retry
+        _rollback(processes)
         return 1
     print(f"tunnel healthy:  {PUBLIC_URL}")
     print("LIVE — @openswe comments on Linear tickets now trigger containerized runs.")
