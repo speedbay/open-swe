@@ -199,14 +199,22 @@ async def test_newer_transition_suppresses_delayed_older_transition():
     newer["updatedAt"] = "2026-07-31T00:00:00.000Z"
     verify_trigger._transition_records.clear()
     dispatched: list[str] = []
+    older_started = asyncio.Event()
+    release_older = asyncio.Event()
 
     async def fake_dispatch(issue: dict[str, Any]) -> bool:
         dispatched.append(issue["updatedAt"])
+        if issue is older:
+            older_started.set()
+            await release_older.wait()
         return True
 
     with patch.object(verify_trigger, "process_verify_dispatch", side_effect=fake_dispatch):
-        assert await verify_trigger._process_transition_delivery(older) is True
+        older_task = asyncio.create_task(verify_trigger._process_transition_delivery(older))
+        await older_started.wait()
         assert await verify_trigger._process_transition_delivery(newer) is True
+        release_older.set()
+        assert await older_task is True
         assert await verify_trigger._process_transition_delivery(older) is False
 
     assert dispatched == [older["updatedAt"], newer["updatedAt"]]

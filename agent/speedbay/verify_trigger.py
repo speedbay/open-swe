@@ -34,6 +34,7 @@ belt and braces, self-authored state changes are dropped here too.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -96,11 +97,16 @@ class _TransitionRecord:
 
 
 _transition_records: dict[str, _TransitionRecord] = {}
+_RFC3339_OFFSET = re.compile(r"(?:Z|[+-]\d{2}:\d{2})$")
 
 
 def _parse_updated_at(updated_at: Any) -> datetime | None:
     """Parse an RFC3339 timestamp for ordering, preserving raw equality elsewhere."""
-    if not isinstance(updated_at, str) or not updated_at.strip():
+    if (
+        not isinstance(updated_at, str)
+        or not updated_at.strip()
+        or not _RFC3339_OFFSET.search(updated_at)
+    ):
         return None
     try:
         parsed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
