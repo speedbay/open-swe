@@ -340,6 +340,46 @@ def test_oversized_diff_halts_with_cap_and_split_instruction(monkeypatch) -> Non
     assert all(f["severity"] == "hard" for f in payload["findings"])
 
 
+def test_malformed_numstat_halts_with_durable_parsing_evidence(monkeypatch, caplog) -> None:
+    malformed = "1\t0\tagent/api.py\textra\n"
+    _wire(monkeypatch, _numstat(malformed))
+    _stub_gate_store(monkeypatch)
+    durable: dict[str, Any] = {}
+
+    async def ensure(thread_id: str, **kwargs: Any) -> tuple[dict[str, Any], bool]:
+        durable.update(kwargs)
+        return {"status": "pending", **kwargs}, True
+
+    monkeypatch.setattr(fg, "ensure_gate_approval_pending", ensure)
+    handled: list[bool] = []
+
+    async def handler(request: Any) -> Any:
+        handled.append(True)
+        return "pr-opened"
+
+    with caplog.at_level("ERROR"):
+        payload = _halt_payload(_run(PRStandardsMiddleware().awrap_tool_call(_request(), handler)))
+
+    assert handled == []
+    assert payload["atomicity"]["passed"] is False
+    assert payload["atomicity"]["exceeded"] == [
+        "malformed numstat row: expected exactly two tab separators"
+    ]
+    assert payload["findings"] == [
+        {
+            "domain": "atomicity",
+            "rule": "atomicity",
+            "message": "malformed numstat row: expected exactly two tab separators",
+            "severity": "hard",
+        }
+    ]
+    assert "Atomicity numstat parsing failed" in payload["error"]
+    assert "malformed numstat row" in payload["error"]
+    assert durable["evidence_tail"] == malformed
+    assert durable["diff_stats"]["exceeded"] == payload["atomicity"]["exceeded"]
+    assert "gate infrastructure error" not in caplog.text
+
+
 def test_hygiene_only_violations_get_corrective_retry(monkeypatch) -> None:
     """OPE-75: hygiene is REMEDIABLE — an agent-recoverable corrective block
     embedding the required format, no Command, no approval card."""
