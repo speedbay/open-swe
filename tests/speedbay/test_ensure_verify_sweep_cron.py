@@ -30,7 +30,9 @@ class _FakeCrons:
         if self.fail:
             raise RuntimeError("store unavailable")
         self.search_calls.append(kwargs)
-        return self.existing
+        offset = kwargs.get("offset", 0)
+        limit = kwargs.get("limit", 10)
+        return self.existing[offset : offset + limit]
 
     async def create(self, *args: Any, **kwargs: Any) -> dict[str, str]:
         if self.fail:
@@ -140,6 +142,41 @@ async def test_schedule_helper_swallows_failure(
     await asyncio.gather(*asyncio.all_tasks() - {asyncio.current_task()})
 
 
-async def test_operator_script_lists_only() -> None:
-    assert not hasattr(ensure_verify_sweep_cron, "create")
-    assert not hasattr(ensure_verify_sweep_cron, "ASSISTANT_ID")
+async def test_operator_script_lists_every_cron_page(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    existing = [
+        {
+            "cron_id": f"cron-{index:03}",
+            "metadata": {"kind": "verify_sweep" if index == 150 else "other"},
+            "schedule": "17 * * * *",
+        }
+        for index in range(205)
+    ]
+    crons = _FakeCrons(existing=existing)
+    monkeypatch.setattr(ensure_verify_sweep_cron, "_client", lambda: _FakeClient(crons))
+
+    result = await ensure_verify_sweep_cron.list_crons()
+
+    expected_ids = [cron["cron_id"] for cron in existing]
+    assert crons.search_calls == [
+        {"limit": 100, "offset": 0},
+        {"limit": 100, "offset": 100},
+        {"limit": 100, "offset": 200},
+    ]
+    assert [cron["cron_id"] for cron in result] == expected_ids
+    assert [line.split()[0] for line in capsys.readouterr().out.splitlines()] == expected_ids
+    assert result[150]["metadata"]["kind"] == "verify_sweep"
+
+
+async def test_operator_script_reports_empty_cron_list(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    crons = _FakeCrons()
+    monkeypatch.setattr(ensure_verify_sweep_cron, "_client", lambda: _FakeClient(crons))
+
+    result = await ensure_verify_sweep_cron.list_crons()
+
+    assert crons.search_calls == [{"limit": 100, "offset": 0}]
+    assert result == []
+    assert capsys.readouterr().out == "no crons registered\n"

@@ -27,7 +27,16 @@ def _client():
 
 
 async def list_crons() -> list[Any]:
-    crons: list[Any] = await _client().crons.search(limit=100)
+    crons: list[Any] = []
+    offset = 0
+    while True:
+        page = await _client().crons.search(limit=100, offset=offset)
+        if not page:
+            break
+        crons.extend(page)
+        if len(page) < 100:
+            break
+        offset += len(page)
     if not crons:
         print("no crons registered")
     for c in crons:
