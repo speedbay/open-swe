@@ -5,18 +5,12 @@
 `validate_local_dev_llm_config` as a boot-time credential check. The real
 precedence is per-thread override -> user profile -> team default, and the team
 default lives in the LangGraph Store under namespace ["team_settings"], key
-"default" (agent/dashboard/team_settings.py). Normally only the dashboard API
-writes it; this script writes it directly over the Store HTTP API so the model is
-configurable before the dashboard exists.
+"default" (agent/dashboard/team_settings.py).
 
 Usage:
     speedbay/set_model.py                       # show current settings
     speedbay/set_model.py <model_id> [effort]   # set agent + subagent default
     speedbay/set_model.py --list                # show selectable model ids + efforts
-
-Effort defaults to the model's own default; each model supports a different
-set (see --list). An unsupported effort is rejected here because
-get_team_default_model_pair silently falls back to defaults at resolve time.
 """
 
 from __future__ import annotations
@@ -29,9 +23,7 @@ import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-# Single source of truth for selectable models/efforts — stdlib-only module,
-# safe to import without the agent's dependencies installed.
-from agent.dashboard.options import FABLE_MODEL_IDS, SUPPORTED_MODELS  # noqa: E402
+from agent.dashboard.options import SUPPORTED_MODELS  # noqa: E402
 
 BASE = "http://localhost:2024"
 NAMESPACE = ["team_settings"]
@@ -39,11 +31,7 @@ KEY = "default"
 
 
 def _request(path: str, body: dict, method: str = "POST") -> dict | None:
-    """Send JSON to the local LangGraph server; returns the parsed body or None.
-
-    The Store API splits verbs: search is POST /store/items/search, writes are
-    PUT /store/items (langgraph_api/api/store.py).
-    """
+    """Send JSON to the local backend and return its parsed response."""
     req = urllib.request.Request(
         f"{BASE}{path}",
         data=json.dumps(body).encode(),
@@ -69,24 +57,32 @@ def get_settings() -> dict:
     return {}
 
 
-def set_model(model_id: str, effort: str) -> None:
-    """Write the agent + subagent default model pair into the Store."""
-    current = get_settings()
-    current.update(
-        {
-            "default_agent_model": model_id,
-            "default_agent_reasoning_effort": effort,
-            "default_agent_subagent_model": model_id,
-            "default_agent_subagent_reasoning_effort": effort,
-        }
+def set_model(model_id: str, effort: str) -> dict:
+    """Commit one agent/subagent pair through the host-only atomic operation."""
+    response = _request(
+        "/speedbay/model-settings/agent-default",
+        {"model_id": model_id, "effort": effort},
+        method="PUT",
     )
-    _request("/store/items", {"namespace": NAMESPACE, "key": KEY, "value": current}, method="PUT")
+    if not isinstance(response, dict):
+        raise SystemExit("model settings commit returned no response")
+    return response
 
 
 def _print_models(settings: dict) -> None:
     for field in sorted(settings):
         if "model" in field or "effort" in field:
             print(f"  {field:44} {settings[field]!r}")
+
+
+def _effective_pair(response: dict, name: str) -> tuple[str, str]:
+    pair = response.get(name)
+    if not isinstance(pair, dict):
+        raise SystemExit(f"model settings commit returned no effective {name} pair")
+    model_id, effort = pair.get("model_id"), pair.get("effort")
+    if not isinstance(model_id, str) or not isinstance(effort, str):
+        raise SystemExit(f"model settings commit returned an invalid effective {name} pair")
+    return model_id, effort
 
 
 def main() -> None:
@@ -109,24 +105,18 @@ def main() -> None:
 
     model_id = args[0]
     option = next((m for m in SUPPORTED_MODELS if m["id"] == model_id), None)
-    if option is None:
-        print(f"warning: {model_id!r} is not in the known list; setting it anyway", file=sys.stderr)
     effort = args[1] if len(args) > 1 else (option["default_effort"] if option else "medium")
-    if option is not None and effort not in option["efforts"]:
+    response = set_model(model_id, effort)
+    main_pair = _effective_pair(response, "main")
+    subagent_pair = _effective_pair(response, "subagent")
+    requested = (model_id, effort)
+    if main_pair != requested or subagent_pair != requested:
         raise SystemExit(
-            f"{model_id} does not support effort {effort!r} — the runtime would silently "
-            f"fall back to its default. Supported: {', '.join(option['efforts'])}"
+            "model settings commit did not take effect: "
+            f"main={main_pair!r}, subagent={subagent_pair!r}, requested={requested!r}"
         )
-    if model_id in FABLE_MODEL_IDS and not get_settings().get("fable_enabled"):
-        raise SystemExit(
-            f"{model_id} is gated behind fable_enabled, which is currently false — the "
-            "runtime gate_fable_model guard would silently swap in a non-Fable fallback. "
-            "Enable Fable via the dashboard team settings first (it is a ZDR kill switch; "
-            "this script won't flip it)."
-        )
-    set_model(model_id, effort)
-    print(f"set default agent model to {model_id} (effort={effort})\nverifying:")
-    _print_models(get_settings())
+    print(f"effective main agent: {main_pair[0]} (effort={main_pair[1]})")
+    print(f"effective subagent: {subagent_pair[0]} (effort={subagent_pair[1]})")
 
 
 if __name__ == "__main__":

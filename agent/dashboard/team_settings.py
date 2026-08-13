@@ -321,7 +321,12 @@ async def upsert_team_settings(update: TeamSettingsUpdate) -> dict[str, Any]:
         "default_chat_reasoning_effort": update.default_chat_reasoning_effort,
         "updated_at": datetime.now(UTC).isoformat(),
     }
-    await _client().store.put_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY, value)
+    # SPEEDBAY DEVIATION (OPE-134; see FORK.md): serializes this shared record with the
+    # host-only agent-default read/merge/write operation.
+    from ..speedbay.model_settings import team_settings_commit_lock
+
+    async with team_settings_commit_lock:
+        await _client().store.put_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY, value)
     return value
 
 

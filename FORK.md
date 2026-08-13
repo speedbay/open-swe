@@ -40,6 +40,7 @@ all survived, and re-add any a merge dropped (each is marked in-code with a
 | 10 | `GateApprovalCard` render site (OPE-10) | import + one JSX element in `AgentThreadView.tsx`; component and hooks are fork-added files |
 | 11 | `PendingGateApprovalsBanner` render site (OPE-10) | import + one JSX element in `AgentsHome.tsx`; component and hooks are fork-added files |
 | 12 | Wrapped `request_pr_review` tool registration (OPE-100) | direct import in `agent/server.py`; source gate lives in `agent/speedbay/review_request_gate.py` |
+| 13 | `model_settings_router` host-only API registration (OPE-134) | import + `include_router` in `agent/api/app.py`; commit operation lives in `agent/speedbay/model_settings.py` |
 
 OPE-100 deliberately gates review requests by run source rather than comparing the PR
 head with the run's working branch: the Slack/GitHub allowlist covers every current
@@ -95,6 +96,8 @@ The upstream-owned files below carry edits. Each is marked in-code with
 | `agent/utils/model.py` | Import + one marked block at the top of `make_model()`: cache-checked `subscription_model(...)` short-circuit for subscription OAuth (OPE-60) | The single chokepoint every graph's model construction routes through; the block must precede the `openai:` base_url default it overrides. Fail-open: with `SPEEDBAY_SUBSCRIPTION_AUTH` unset it returns `None` and the API-key path is unchanged. |
 | `agent/webhooks/common.py` | Warning in `upsert_agent_thread_owner_metadata` when owner attribution resolves without a GitHub login (OPE-84) | This upstream-owned persistence chokepoint sees every source and the final resolved identity; re-check that the warning remains immediately after login resolution so unlistable threads are observable without changing metadata or callers. |
 | `agent/utils/linear_team_repo_map.py` | Upstream's own workspace mapping replaced with an empty dict | Docs designate this file as deployer config. Our Linear team "Open SWE" collided with upstream's entry of the same name and routed to `langchain-ai/open-swe`, which the allowlist rejected. Empty mapping falls back to `DEFAULT_REPO_OWNER`/`DEFAULT_REPO_NAME` (`speedbay/warehouse`); per-comment `repo:owner/name` still overrides. |
+| `agent/api/app.py` | Import + `include_router(model_settings_router)` (OPE-134) | The FastAPI composition seam is the only way to mount the org-owned host-only model-setting operation without putting it under the dashboard route. |
+| `agent/dashboard/team_settings.py` | Wrap `upsert_team_settings` Store write in the shared OPE-134 lock | This dashboard writer replaces the same shared record as the org-owned read/merge/write model commit; serializing both prevents process-local lost updates. |
 
 Deliberately **not** patched, to keep the merge surface small:
 
