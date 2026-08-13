@@ -2,11 +2,7 @@
 // approval types, API calls, and query hooks live here, in a fork-added file,
 // so upstream `types.ts` / `api.ts` / `queries.ts` stay unedited apart from the
 // one marked `agentsRequest` export (see FORK.md registration table).
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { agentsRequest } from "./api"
 import { agentThreadKeys, invalidateAgentThreadLists } from "./queries"
@@ -23,6 +19,7 @@ export interface GateApproval {
   fingerprint: string
   status: WorkflowApprovalStatus
   issueId: string | null
+  issueIdentifier: string | null
   baseSha: string
   headSha: string
   failedRuleIds: Array<string>

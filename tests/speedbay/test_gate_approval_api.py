@@ -1,4 +1,4 @@
-"""Tests for the gate-breach approval dashboard API (OPE-10, OPE-75)."""
+"""Tests for the gate-breach approval dashboard API (OPE-10, OPE-75, OPE-140)."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ def _pending_record(**overrides: object) -> dict:
         "fingerprint": FP,
         "status": "pending",
         "issue_id": "OPE-10",
+        "issue_identifier": "OPE-10",
         "base_sha": "b" * 40,
         "head_sha": "h" * 40,
         "failed_rule_ids": ["atomicity"],
@@ -54,17 +55,22 @@ async def test_list_gate_approvals_requires_thread_owner(monkeypatch) -> None:
 async def test_list_gate_approvals_returns_records_for_owner(monkeypatch) -> None:
     _wire_thread(monkeypatch)
 
+    record = _pending_record(
+        issue_id="3f865ff3-c06c-4b6d-a043-4e20669f9363", issue_identifier="OPE-123"
+    )
+
     async def fake_get(thread_id: str) -> dict:
-        return {FP: _pending_record()}
+        return {FP: record}
 
     monkeypatch.setattr(gate_approval_api, "get_gate_approvals", fake_get)
     response = await gate_approval_api.list_gate_approvals("t-1", session=OWNER_SESSION)
     assert response["threadId"] == "t-1"
     assert response["isOwner"] is True
     (approval,) = response["approvals"]
-    assert approval["fingerprint"] == FP
+    assert approval["fingerprint"] == "fp-1"
     assert approval["status"] == "pending"
-    assert approval["issueId"] == "OPE-10"
+    assert approval["issueId"] == "3f865ff3-c06c-4b6d-a043-4e20669f9363"
+    assert approval["issueIdentifier"] == "OPE-123"
     assert approval["failedRuleIds"] == ["atomicity"]
     assert "rounds" not in approval  # OPE-75: no corrective-round presentation
     assert approval["diffStats"]["rawLoc"] == 400
