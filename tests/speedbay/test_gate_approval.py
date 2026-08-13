@@ -465,6 +465,105 @@ def test_mark_notified_sets_flag_and_timestamp(monkeypatch) -> None:
     _run(ga.mark_gate_approval_notified("t-1", "missing"))  # no-op, no error
 
 
+# --- OPE-139 decision restoration and retention --------------------------------
+
+
+def test_restore_pending_only_reverts_its_current_approval(monkeypatch) -> None:
+    client = FakeLangGraphClient()
+    _wire_store(monkeypatch, client)
+    kwargs: dict[str, Any] = {
+        "fingerprint": FP,
+        "issue_id": "uuid-1",
+        "base_sha": "b" * 40,
+        "head_sha": "h" * 40,
+        "failed_rule_ids": ["atomicity"],
+    }
+    _run(ga.ensure_gate_approval_pending("t-1", **kwargs))
+    monkeypatch.setattr(ga, "_now", lambda: "first-decision")
+    first = _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner"))
+    assert first is not None
+    assert _run(ga.restore_gate_approval_pending("t-1", FP, decided_at="first-decision")) is True
+    restored = _run(ga.get_gate_approvals("t-1"))[FP]
+    assert restored["status"] == ga.GATE_APPROVAL_PENDING
+    assert "decided_at" not in restored and "decided_by" not in restored
+
+    monkeypatch.setattr(ga, "_now", lambda: "later-decision")
+    second = _run(ga.decide_gate_approval("t-1", FP, approved=True, actor="owner"))
+    assert second is not None
+    before = dict(_run(ga.get_gate_approvals("t-1"))[FP])
+    assert _run(ga.restore_gate_approval_pending("t-1", FP, decided_at="first-decision")) is False
+    assert _run(ga.get_gate_approvals("t-1"))[FP] == before
+
+    assert _run(ga.consume_gate_approval("t-1", FP)) is True
+    before = dict(_run(ga.get_gate_approvals("t-1"))[FP])
+    assert _run(ga.restore_gate_approval_pending("t-1", FP, decided_at="later-decision")) is False
+    assert _run(ga.get_gate_approvals("t-1"))[FP] == before
+
+    rejected_fp = "rejected"
+    _run(ga.ensure_gate_approval_pending("t-1", **{**kwargs, "fingerprint": rejected_fp}))
+    rejected = _run(ga.decide_gate_approval("t-1", rejected_fp, approved=False, actor="owner"))
+    assert rejected is not None
+    before = dict(_run(ga.get_gate_approvals("t-1"))[rejected_fp])
+    assert (
+        _run(
+            ga.restore_gate_approval_pending("t-1", rejected_fp, decided_at=rejected["decided_at"])
+        )
+        is False
+    )
+    assert _run(ga.get_gate_approvals("t-1"))[rejected_fp] == before
+
+
+def test_save_approvals_retains_protected_records_before_consumed(monkeypatch) -> None:
+    client = FakeLangGraphClient()
+    _wire_store(monkeypatch, client)
+    monkeypatch.setattr(ga, "_MAX_APPROVAL_RECORDS", 4)
+    approvals = {
+        fingerprint: {
+            "fingerprint": fingerprint,
+            "status": status,
+            "requested_at": f"2026-08-0{index}T00:00:00+00:00",
+        }
+        for index, (fingerprint, status) in enumerate(
+            [
+                ("consumed-oldest", ga.GATE_APPROVAL_CONSUMED),
+                ("consumed-middle", ga.GATE_APPROVAL_CONSUMED),
+                ("consumed-newest", ga.GATE_APPROVAL_CONSUMED),
+                ("pending", ga.GATE_APPROVAL_PENDING),
+                ("approved", ga.GATE_APPROVAL_APPROVED),
+                ("rejected", ga.GATE_APPROVAL_REJECTED),
+            ],
+            start=1,
+        )
+    }
+
+    _run(ga._save_approvals("t-1", approvals))
+
+    saved = client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY]
+    assert set(saved) == {"consumed-newest", "pending", "approved", "rejected"}
+    assert len(saved) == 4
+
+
+def test_save_approvals_refuses_protected_overflow_before_persisting(monkeypatch) -> None:
+    previous = {"previous": {"fingerprint": "previous", "status": ga.GATE_APPROVAL_CONSUMED}}
+    client = FakeLangGraphClient(FakeThreads({"t-1": {ga.GATE_APPROVALS_KEY: previous}}))
+    _wire_store(monkeypatch, client)
+    monkeypatch.setattr(ga, "_MAX_APPROVAL_RECORDS", 2)
+    approvals = {
+        fingerprint: {
+            "fingerprint": fingerprint,
+            "status": ga.GATE_APPROVAL_PENDING,
+            "requested_at": f"2026-08-0{index}T00:00:00+00:00",
+        }
+        for index, fingerprint in enumerate(("one", "two", "three"), start=1)
+    }
+
+    with pytest.raises(RuntimeError, match="retention exceeded 2 protected records"):
+        _run(ga._save_approvals("t-1", approvals))
+
+    assert client.threads.updates == []
+    assert client.threads.metadata["t-1"][ga.GATE_APPROVALS_KEY] == previous
+
+
 # --- review-hardening regressions (PR #44 review) ------------------------------
 
 

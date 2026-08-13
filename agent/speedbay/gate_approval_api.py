@@ -28,6 +28,7 @@ from .gate_approval import (
     gate_approval_responses,
     get_gate_approvals,
     list_pending_gate_approvals,
+    restore_gate_approval_pending,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,14 +91,20 @@ async def approve_gate_breach(
     record = await decide_gate_approval(thread_id, fingerprint, approved=True, actor=session["sub"])
     if record is None:
         raise HTTPException(404, "gate approval not found or already decided")
-    await _dispatch_followup(
-        thread_id,
-        metadata,
-        "A human approved the PR-standards gate breach (one-time exemption for "
-        "the current diff). Retry open_pull_request now with the same diff — do "
-        "not amend commits or change the PR title/body before retrying.",
-        plan_mode=False,
-    )
+    decided_at = record.get("decided_at")
+    try:
+        await _dispatch_followup(
+            thread_id,
+            metadata,
+            "A human approved the PR-standards gate breach (one-time exemption for "
+            "the current diff). Retry open_pull_request now with the same diff — do "
+            "not amend commits or change the PR title/body before retrying.",
+            plan_mode=False,
+        )
+    except Exception:
+        if isinstance(decided_at, str):
+            await restore_gate_approval_pending(thread_id, fingerprint, decided_at=decided_at)
+        raise
     return {"status": "approved", "fingerprint": fingerprint}
 
 
