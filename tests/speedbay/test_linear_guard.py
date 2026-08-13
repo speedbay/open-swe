@@ -146,17 +146,16 @@ def test_scoped_instance_drops_missing_email_fail_closed(
     assert guard.is_foreign_comment({}) is True
 
 
-# --- duplicate-delivery dedup (OPE-56) -----------------------------------------
+# --- retry-safe duplicate-delivery claims (OPE-158) ----------------------------
 
 COMMENT_ID = PAYLOAD["data"]["id"]
 
 
 @pytest.fixture(autouse=True)
-def _fresh_seen_comments():
-    """The dedup set lives for the process; tests need isolation."""
-    guard._seen_comment_ids.clear()
+def _fresh_comment_delivery_states():
+    guard._comment_delivery_states.clear()
     yield
-    guard._seen_comment_ids.clear()
+    guard._comment_delivery_states.clear()
 
 
 @pytest.fixture
@@ -189,7 +188,7 @@ def route_call(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(linear_routes.common, "get_team_default_repo", _none)
     monkeypatch.setattr(linear_routes.common, "_is_repo_allowed", lambda *_args: True)
 
-    def _call(payload: dict, bg_tasks, *, resolve_repo: bool = True):
+    async def _call(payload: dict, bg_tasks, *, resolve_repo: bool = True):
         nonlocal profile_repo
         profile_repo = {"owner": "speedbay", "name": "warehouse"} if resolve_repo else None
 
@@ -200,7 +199,7 @@ def route_call(monkeypatch: pytest.MonkeyPatch):
             {"type": "http", "headers": [(b"linear-signature", b"valid")]},
             _receive,
         )
-        return asyncio.run(linear_routes.linear_webhook(request, bg_tasks))
+        return await linear_routes.linear_webhook(request, bg_tasks)
 
     return _call
 
@@ -223,65 +222,122 @@ def _triggering_payload(comment_id: str | None) -> dict:
     return payload
 
 
-def test_guard_same_comment_id_twice_second_is_duplicate() -> None:
-    assert guard.is_duplicate_comment(PAYLOAD) is False
-    assert guard.is_duplicate_comment(copy.deepcopy(PAYLOAD)) is True
+async def test_dispatch_comment_once_exception_releases_for_retry() -> None:
+    calls = 0
 
+    error = RuntimeError("dispatch failed")
 
-def test_guard_distinct_comment_ids_both_pass() -> None:
-    other = _triggering_payload("bbbb-cccc-dddd-eeee")
-    assert guard.is_duplicate_comment(PAYLOAD) is False
-    assert guard.is_duplicate_comment(other) is False
+    async def raises() -> None:
+        nonlocal calls
+        calls += 1
+        raise error
 
-
-def test_guard_missing_comment_id_fails_open() -> None:
-    assert guard.is_duplicate_comment({}) is False
-    assert guard.is_duplicate_comment({"data": {}}) is False
-    assert guard.is_duplicate_comment({"data": {"id": "  "}}) is False
-
-
-def test_guard_bounded_fifo_eviction() -> None:
-    for i in range(513):
-        assert guard.is_duplicate_comment({"data": {"id": f"c-{i}"}}) is False
-    assert guard.is_duplicate_comment({"data": {"id": "c-0"}}) is False
-    assert guard.is_duplicate_comment({"data": {"id": "c-512"}}) is True
-
-
-def test_route_replaying_captured_payload_dispatches_exactly_once(route_call) -> None:
-    """AC: the same comment delivered twice (once per covering webhook) starts
-    exactly one run — no interrupted twin."""
-    bg = _CapturingBackgroundTasks()
-    first = route_call(_triggering_payload(COMMENT_ID), bg)
-    second = route_call(_triggering_payload(COMMENT_ID), bg)
-    assert first["status"] == "accepted"
-    assert second["status"] == "ignored"
-    assert "Duplicate" in second["reason"]
-    assert len(bg.calls) == 1
-
-
-def test_route_distinct_comments_on_same_issue_both_dispatch(route_call) -> None:
-    bg = _CapturingBackgroundTasks()
-    first = route_call(_triggering_payload(COMMENT_ID), bg)
-    second = route_call(_triggering_payload("bbbb-cccc-dddd-eeee"), bg)
-    assert first["status"] == "accepted"
-    assert second["status"] == "accepted"
-    assert len(bg.calls) == 2
-
-
-def test_route_ignored_delivery_does_not_poison_retry(route_call) -> None:
-    bg = _CapturingBackgroundTasks()
     payload = _triggering_payload(COMMENT_ID)
-    first = route_call(payload, bg, resolve_repo=False)
-    second = route_call(payload, bg)
-    assert first == {"status": "ignored", "reason": "No default repository configured"}
-    assert second["status"] == "accepted"
-    assert len(bg.calls) == 1
+    with pytest.raises(RuntimeError) as raised:
+        await guard.dispatch_comment_once(payload, raises)
+    assert raised.value is error
+    assert COMMENT_ID not in guard._comment_delivery_states
+
+    with pytest.raises(RuntimeError) as retried:
+        await guard.dispatch_comment_once(payload, raises)
+    assert retried.value is error
+    assert calls == 2
 
 
-def test_route_missing_comment_id_still_dispatches(route_call) -> None:
-    bg = _CapturingBackgroundTasks()
-    first = route_call(_triggering_payload(None), bg)
-    second = route_call(_triggering_payload(None), bg)
-    assert first["status"] == "accepted"
-    assert second["status"] == "accepted"
-    assert len(bg.calls) == 2
+async def test_dispatch_comment_once_false_releases_for_retry() -> None:
+    calls = 0
+
+    async def false_then_success() -> bool | None:
+        nonlocal calls
+        calls += 1
+        return False if calls == 1 else None
+
+    payload = _triggering_payload(COMMENT_ID)
+    await guard.dispatch_comment_once(payload, false_then_success)
+    assert COMMENT_ID not in guard._comment_delivery_states
+
+    await guard.dispatch_comment_once(payload, false_then_success)
+    assert calls == 2
+    assert guard._comment_delivery_states[COMMENT_ID] == "succeeded"
+
+
+async def test_route_concurrent_duplicate_claims_once_and_commits_success(
+    monkeypatch: pytest.MonkeyPatch, route_call
+) -> None:
+    from agent.webhooks import linear_routes
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def dispatcher(*_args, **_kwargs) -> None:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(linear_routes.service, "process_linear_issue", dispatcher)
+    first_bg = _CapturingBackgroundTasks()
+    second_bg = _CapturingBackgroundTasks()
+    payload = _triggering_payload(COMMENT_ID)
+    first, second = await asyncio.gather(
+        route_call(payload, first_bg),
+        route_call(copy.deepcopy(payload), second_bg),
+    )
+    assert first["status"] == second["status"] == "accepted"
+    assert len(first_bg.calls) == len(second_bg.calls) == 1
+
+    first_call, second_call = first_bg.calls[0], second_bg.calls[0]
+    tasks = [
+        asyncio.create_task(first_call[0](*first_call[1])),
+        asyncio.create_task(second_call[0](*second_call[1])),
+    ]
+    await entered.wait()
+    assert calls == 1
+    assert guard._comment_delivery_states[COMMENT_ID] == "pending"
+    release.set()
+    await asyncio.gather(*tasks)
+    assert guard._comment_delivery_states[COMMENT_ID] == "succeeded"
+
+    late_bg = _CapturingBackgroundTasks()
+    late = await route_call(copy.deepcopy(payload), late_bg)
+    assert late["status"] == "accepted"
+    late_call = late_bg.calls[0]
+    await late_call[0](*late_call[1])
+    assert calls == 1
+
+
+async def test_dispatch_comment_once_identity_and_capacity_boundaries() -> None:
+    calls: list[str] = []
+
+    async def dispatch(label: str) -> None:
+        calls.append(label)
+
+    await guard.dispatch_comment_once(_triggering_payload("first"), dispatch, "first")
+    await guard.dispatch_comment_once(_triggering_payload("second"), dispatch, "second")
+    await guard.dispatch_comment_once({"data": {}}, dispatch, "missing")
+    await guard.dispatch_comment_once({"data": {"id": "  "}}, dispatch, "blank")
+    assert calls == ["first", "second", "missing", "blank"]
+    assert set(guard._comment_delivery_states) == {"first", "second"}
+
+    guard._comment_delivery_states.clear()
+    for i in range(guard._SEEN_COMMENTS_MAX):
+        guard._comment_delivery_states[f"succeeded-{i}"] = "succeeded"
+    await guard.dispatch_comment_once(_triggering_payload("new"), dispatch, "new")
+    assert "succeeded-0" not in guard._comment_delivery_states
+    assert guard._comment_delivery_states["new"] == "succeeded"
+
+    guard._comment_delivery_states.clear()
+    guard._comment_delivery_states["pending"] = "pending"
+    for i in range(guard._SEEN_COMMENTS_MAX - 1):
+        guard._comment_delivery_states[f"succeeded-{i}"] = "succeeded"
+    await guard.dispatch_comment_once(_triggering_payload("newer"), dispatch, "newer")
+    assert guard._comment_delivery_states["pending"] == "pending"
+    assert "succeeded-0" not in guard._comment_delivery_states
+
+    guard._comment_delivery_states.clear()
+    for i in range(guard._SEEN_COMMENTS_MAX):
+        guard._comment_delivery_states[f"pending-{i}"] = "pending"
+    await guard.dispatch_comment_once(_triggering_payload("untracked"), dispatch, "untracked")
+    assert "untracked" not in guard._comment_delivery_states
+    assert calls[-1] == "untracked"
