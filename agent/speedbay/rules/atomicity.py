@@ -170,22 +170,23 @@ def parse_numstat(numstat: str) -> list[NumstatRow]:
 
     Binary files report ``-`` for both counts; they parse as 0 LOC (the file
     still counts toward the file cap through its category). Rename rows are
-    resolved to their postimage path. A row with any other non-integer count
-    raises ``ValueError``. Pure string parsing — the caller runs git.
+    resolved to their postimage path. Every non-empty row must have git's exact
+    three-field shape so malformed output cannot undercount the diff. Pure
+    string parsing — the caller runs git.
     """
     rows: list[NumstatRow] = []
     for line in numstat.splitlines():
-        fields = line.split("\t", 2)
-        if len(fields) != 3 or not fields[2]:
+        if not line:
             continue
-        added, removed, path = fields
-        rows.append(
-            NumstatRow(
-                added=_count(added),
-                removed=_count(removed),
-                path=_postimage_path(path),
-            )
-        )
+        if line.count("\t") != 2:
+            raise ValueError("malformed numstat row: expected exactly two tab separators")
+        added, removed, path = line.split("\t")
+        if not path:
+            raise ValueError("malformed numstat row: empty raw path")
+        postimage_path = _postimage_path(path)
+        if not postimage_path:
+            raise ValueError("malformed numstat row: empty postimage path")
+        rows.append(NumstatRow(added=_count(added), removed=_count(removed), path=postimage_path))
     return rows
 
 
