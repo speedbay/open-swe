@@ -323,11 +323,13 @@ LIVE, every `@openswe` Linear comment triggers a containerized run.
 
 ### Disk reclaim
 
-A weekly systemd timer (`openswe-prune.timer`) prunes stopped containers and dangling images
-older than 7 days. Named images (`openswe-sandbox:dev`) are never removed. Enable it on the host
-with `sudo systemctl enable --now openswe-prune.timer`. Check its status with
-`systemctl status openswe-prune.timer`, or run it manually with
-`sudo systemctl start openswe-prune.service`.
+A weekly systemd timer (`openswe-prune.timer`) prunes only stopped containers carrying
+`openswe.sandbox=1` that were created more than 168 hours ago. Unlabeled containers and all
+images, networks, volumes, and build cache are out of scope. Enable it on the host with
+`sudo systemctl enable --now openswe-prune.timer`. Check its status with
+`systemctl status openswe-prune.timer`, run it manually with
+`sudo systemctl start openswe-prune.service`, and inspect results with
+`journalctl -u openswe-prune.service`.
 
 ### On the Azure host (systemd)
 

@@ -13,14 +13,16 @@ def _unit(name: str) -> configparser.ConfigParser:
     return unit
 
 
-def test_prune_service_removes_only_stale_dangling_resources() -> None:
+def test_prune_service_targets_only_old_openswe_containers() -> None:
     unit = _unit("openswe-prune.service")
     command = unit["Service"]["ExecStart"]
 
-    assert command == "/usr/bin/docker system prune -f --filter until=168h"
-    assert "docker system prune" in command
+    assert command == (
+        "/usr/bin/docker container prune -f --filter label=openswe.sandbox=1 --filter until=168h"
+    )
+    assert "docker system prune" not in command
+    assert "label=openswe.sandbox=1" in command
     assert "until=168h" in command
-    assert "-a" not in command
     assert unit["Service"]["User"] == "openswe"
     assert unit["Service"]["Type"] == "oneshot"
     assert unit["Service"]["StandardOutput"] == "journal"
