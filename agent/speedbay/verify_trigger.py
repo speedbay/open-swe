@@ -16,13 +16,14 @@ continue with upstream's comment handling"; a dict is the route's response.
 
 Duplicate-delivery safety is structural, not best-effort: verified live,
 every Linear event is delivered once per covering webhook (two for OPE), and
-both deliveries carry the same ``data.updatedAt``. A process-lifetime seen-map
-keyed on ``(issue id, updatedAt)`` drops the duplicates before dispatch, so
-only one run is created per transition; the deterministic per-issue thread id
-plus the prompt's re-read-before-finalize rule are the backstop for anything
-the seen-map cannot see (multi-worker deployments, process restarts). A later
-re-entry into ready-for-verify (incomplete → rework → merge) carries a new
-``updatedAt`` and resumes the same thread with prior verification context.
+both deliveries carry the same ``data.updatedAt``. A bounded process-local
+per-issue transition map claims one identity before dispatch, releases failed
+dispatches for retry, and suppresses stale delayed deliveries. The deterministic
+per-issue thread id plus the prompt's re-read-before-finalize rule are the
+backstop for anything this map cannot see (multi-worker deployments, process
+restarts). A later re-entry into ready-for-verify (incomplete → rework → merge)
+carries a new ``updatedAt`` and resumes the same thread with prior verification
+context.
 
 Loop safety: the verdict transition targets ``done``/``incomplete``, which
 never match the ready-for-verify filter, and verdict comments are authored by
@@ -33,8 +34,10 @@ belt and braces, self-authored state changes are dropped here too.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import BackgroundTasks
 from langgraph_sdk.schema import MultitaskStrategy
@@ -80,26 +83,89 @@ def is_verify_transition(payload: dict[str, Any]) -> bool:
     return state.get("name") == VERIFY_STATE_NAME
 
 
-# Process-lifetime duplicate-delivery guard. Linear delivers each event once
-# per covering webhook (verified live: identical ``data.updatedAt`` on every
-# copy), and ``create_durable_run`` has no idempotency key — without this, a
-# duplicate arriving mid-run interrupts it and one arriving after completion
-# starts a second run. Bounded FIFO; multi-worker deployments fall back to the
-# thread-level re-read-before-finalize backstop.
+# Process-local delivery state. Multi-worker deployments and restarts still rely
+# on the deterministic thread and re-read-before-finalize backstop.
 _SEEN_MAX = 512
-_seen_transitions: dict[str, str] = {}
 
 
-def _is_duplicate_delivery(issue_id: str, updated_at: str) -> bool:
-    """True when this (issue, updatedAt) transition was already dispatched."""
-    if not updated_at:
-        return False  # cannot distinguish — let the thread-level backstop handle it
-    if _seen_transitions.get(issue_id) == updated_at:
+@dataclass
+class _TransitionRecord:
+    identity: tuple[str, str]
+    watermark: datetime
+    state: Literal["pending", "succeeded", "retryable"]
+
+
+_transition_records: dict[str, _TransitionRecord] = {}
+
+
+def _parse_updated_at(updated_at: Any) -> datetime | None:
+    """Parse an RFC3339 timestamp for ordering, preserving raw equality elsewhere."""
+    if not isinstance(updated_at, str) or not updated_at.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _admit_transition(issue_id: str, updated_at: str, watermark: datetime) -> bool:
+    """Claim a valid transition synchronously; False leaves it untracked."""
+    if issue_id in _transition_records:
+        _transition_records[issue_id] = _TransitionRecord(
+            (issue_id, updated_at), watermark, "pending"
+        )
         return True
-    _seen_transitions[issue_id] = updated_at
-    while len(_seen_transitions) > _SEEN_MAX:
-        _seen_transitions.pop(next(iter(_seen_transitions)))
-    return False
+    if len(_transition_records) >= _SEEN_MAX:
+        for state in ("succeeded", "retryable"):
+            evictable = next(
+                (key for key, record in _transition_records.items() if record.state == state), None
+            )
+            if evictable is not None:
+                del _transition_records[evictable]
+                break
+    if len(_transition_records) >= _SEEN_MAX:
+        return False
+    _transition_records[issue_id] = _TransitionRecord((issue_id, updated_at), watermark, "pending")
+    return True
+
+
+async def _process_transition_delivery(issue_data: dict[str, Any]) -> bool:
+    """Claim, dispatch, and settle one webhook delivery identity."""
+    issue_id = issue_data.get("id")
+    updated_at = issue_data.get("updatedAt")
+    watermark = _parse_updated_at(updated_at)
+    if not isinstance(issue_id, str) or watermark is None:
+        return await process_verify_dispatch(issue_data)
+
+    identity = (issue_id, updated_at)
+    current = _transition_records.get(issue_id)
+    tracked = False
+    if current is None:
+        tracked = _admit_transition(issue_id, updated_at, watermark)
+    elif current.identity == identity:
+        if current.state in {"pending", "succeeded"}:
+            return False
+        current.state = "pending"
+        tracked = True
+    elif watermark <= current.watermark:
+        return False
+    else:
+        tracked = _admit_transition(issue_id, updated_at, watermark)
+
+    try:
+        dispatched = await process_verify_dispatch(issue_data)
+    except Exception:
+        if tracked and _transition_records.get(issue_id) is not None:
+            current = _transition_records[issue_id]
+            if current.identity == identity:
+                current.state = "retryable"
+        raise
+    if tracked and _transition_records.get(issue_id) is not None:
+        current = _transition_records[issue_id]
+        if current.identity == identity:
+            current.state = "succeeded" if dispatched else "retryable"
+    return dispatched
 
 
 async def _assignee_email(issue_id: str) -> str | None:
@@ -159,14 +225,8 @@ async def maybe_handle(
         return {"status": "ignored", "reason": "Transition authored by the runtime Linear key"}
     if not data.get("id"):
         return {"status": "ignored", "reason": "Issue payload has no id"}
-    if _is_duplicate_delivery(data["id"], data.get("updatedAt", "")):
-        logger.info("Ignoring duplicate verify delivery for %s", identifier)
-        return {
-            "status": "ignored",
-            "reason": "Duplicate delivery of an already-dispatched transition",
-        }
     logger.info("Verify transition accepted for %s", identifier)
-    background_tasks.add_task(process_verify_dispatch, data)
+    background_tasks.add_task(_process_transition_delivery, data)
     return {"status": "accepted", "trigger": "verify-completion", "issue": identifier}
 
 

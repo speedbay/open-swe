@@ -16,6 +16,7 @@ import pathlib
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi import BackgroundTasks
 from langgraph_sdk.schema import MultitaskStrategy
 
@@ -41,7 +42,7 @@ class _FakeBackgroundTasks(BackgroundTasks):
 
 
 def _maybe_handle(payload: dict[str, Any], *, self_authored: bool = False):
-    verify_trigger._seen_transitions.clear()  # isolate the dedup guard per test
+    verify_trigger._transition_records.clear()  # isolate delivery state per test
     tasks = _FakeBackgroundTasks()
     with patch.object(
         verify_trigger.linear_guard,
@@ -98,7 +99,7 @@ def test_positive_payload_queues_exactly_one_dispatch():
     }
     assert len(tasks.calls) == 1
     fn, args = tasks.calls[0]
-    assert fn is verify_trigger.process_verify_dispatch
+    assert fn is verify_trigger._process_transition_delivery
     assert args[0]["id"] == "03525271-e0dd-4de8-9871-e4cd8424a5c7"
 
 
@@ -143,42 +144,94 @@ def test_scoped_instance_fails_closed_when_unassigned(monkeypatch):
     assert _scope_check(None) is True
 
 
-def test_duplicate_delivery_dispatches_exactly_once():
-    # Live-verified: each event arrives once per covering webhook with an
-    # identical data.updatedAt; the second delivery must not start a run.
-    verify_trigger._seen_transitions.clear()
-    tasks = _FakeBackgroundTasks()
+async def test_false_and_exception_release_current_identity_for_retry():
+    issue = _fixture_issue()
+    verify_trigger._transition_records.clear()
     with patch.object(
-        verify_trigger.linear_guard,
-        "is_self_comment",
-        new_callable=AsyncMock,
-        return_value=False,
-    ):
-        first = asyncio.run(verify_trigger.maybe_handle(_payload(), tasks))
-        second = asyncio.run(verify_trigger.maybe_handle(_payload(), tasks))
-    assert first is not None and first["status"] == "accepted"
-    assert second is not None and second["status"] == "ignored"
-    assert "Duplicate" in second["reason"]
-    assert len(tasks.calls) == 1
+        verify_trigger,
+        "process_verify_dispatch",
+        new=AsyncMock(side_effect=[False, True]),
+    ) as dispatch:
+        assert await verify_trigger._process_transition_delivery(issue) is False
+        assert await verify_trigger._process_transition_delivery(issue) is True
+    assert dispatch.await_count == 2
+
+    verify_trigger._transition_records.clear()
+    error = RuntimeError("dispatch failed")
+    with patch.object(
+        verify_trigger,
+        "process_verify_dispatch",
+        new=AsyncMock(side_effect=[error, True]),
+    ) as dispatch:
+        with pytest.raises(RuntimeError, match="dispatch failed") as raised:
+            await verify_trigger._process_transition_delivery(issue)
+        assert raised.value is error
+        assert await verify_trigger._process_transition_delivery(issue) is True
+    assert dispatch.await_count == 2
 
 
-def test_reentry_with_new_updated_at_dispatches_again():
-    # incomplete -> rework -> merge produces a fresh transition (new updatedAt).
-    verify_trigger._seen_transitions.clear()
-    tasks = _FakeBackgroundTasks()
-    later = _payload()
-    later["data"]["updatedAt"] = "2026-07-31T00:00:00.000Z"
+async def test_concurrent_duplicate_dispatches_once():
+    issue = _fixture_issue()
+    verify_trigger._transition_records.clear()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def held_dispatch(_: dict[str, Any]) -> bool:
+        entered.set()
+        await release.wait()
+        return True
+
     with patch.object(
-        verify_trigger.linear_guard,
-        "is_self_comment",
-        new_callable=AsyncMock,
-        return_value=False,
-    ):
-        first = asyncio.run(verify_trigger.maybe_handle(_payload(), tasks))
-        second = asyncio.run(verify_trigger.maybe_handle(later, tasks))
-    assert first is not None and first["status"] == "accepted"
-    assert second is not None and second["status"] == "accepted"
-    assert len(tasks.calls) == 2
+        verify_trigger, "process_verify_dispatch", side_effect=held_dispatch
+    ) as dispatch:
+        first = asyncio.create_task(verify_trigger._process_transition_delivery(issue))
+        await entered.wait()
+        second = asyncio.create_task(verify_trigger._process_transition_delivery(issue))
+        assert await second is False
+        assert dispatch.await_count == 1
+        release.set()
+        assert await first is True
+
+
+async def test_newer_transition_suppresses_delayed_older_transition():
+    older = _fixture_issue()
+    newer = _fixture_issue()
+    newer["updatedAt"] = "2026-07-31T00:00:00.000Z"
+    verify_trigger._transition_records.clear()
+    dispatched: list[str] = []
+
+    async def fake_dispatch(issue: dict[str, Any]) -> bool:
+        dispatched.append(issue["updatedAt"])
+        return True
+
+    with patch.object(verify_trigger, "process_verify_dispatch", side_effect=fake_dispatch):
+        assert await verify_trigger._process_transition_delivery(older) is True
+        assert await verify_trigger._process_transition_delivery(newer) is True
+        assert await verify_trigger._process_transition_delivery(older) is False
+
+    assert dispatched == [older["updatedAt"], newer["updatedAt"]]
+    assert verify_trigger._transition_records[
+        older["id"]
+    ].watermark == verify_trigger._parse_updated_at(newer["updatedAt"])
+
+
+async def test_newer_reentry_dispatches_once():
+    older = _fixture_issue()
+    newer = _fixture_issue()
+    newer["updatedAt"] = "2026-07-31T00:00:00.000Z"
+    verify_trigger._transition_records.clear()
+    dispatched: list[str] = []
+
+    async def fake_dispatch(issue: dict[str, Any]) -> bool:
+        dispatched.append(issue["updatedAt"])
+        return True
+
+    with patch.object(verify_trigger, "process_verify_dispatch", side_effect=fake_dispatch):
+        assert await verify_trigger._process_transition_delivery(older) is True
+        assert await verify_trigger._process_transition_delivery(newer) is True
+        assert await verify_trigger._process_transition_delivery(newer) is False
+
+    assert dispatched == [older["updatedAt"], newer["updatedAt"]]
 
 
 def test_verify_thread_is_deterministic_and_distinct_from_impl_thread():
