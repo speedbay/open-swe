@@ -232,7 +232,15 @@ speedbay/set_model.py --list                                     # options
 speedbay/set_model.py fireworks:accounts/fireworks/models/kimi-k3
 ```
 
-Settings live in the Store, so they survive restarts but not a Store wipe.
+Settings live in the Store, so they survive restarts but not a Store wipe. Set mode sends only
+`model_id` and `effort` to the host-only `PUT /speedbay/model-settings/agent-default`
+operation. It rejects IDs outside `SUPPORTED_MODEL_IDS`, unsupported efforts, and
+Fable selections while `fable_enabled` is false before writing; successful output
+shows the runtime-effective main and subagent pairs. The operation serializes with
+dashboard team-settings writes in the deployed single backend process, preserving
+unrelated settings while it atomically replaces the four agent/subagent fields. It
+is intentionally not exposed through the dashboard Caddy route or Cloudflare tunnel;
+multi-process deployments require storage-level locking or compare-and-set.
 
 ### Subscription OAuth (OPE-60)
 
