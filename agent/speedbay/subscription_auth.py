@@ -10,7 +10,9 @@ OAuth tokens instead of metered API keys. On any problem — toggle off,
 provider without a subscription branch, credentials unreadable — it returns
 ``None`` with a warn-once log and callers fall through to the unchanged
 API-key path (``init_chat_model``), mirroring the fail-open contract of
-:func:`agent.utils.gateway.gateway_overrides`.
+:func:`agent.utils.gateway.gateway_overrides`. The one hard failure: an
+explicit caller API key for a subscription provider raises, because it would
+silently bypass subscription OAuth (OPE-144 review decision).
 
 The OpenAI branch is configuration only: langchain-openai ships
 ``_ChatOpenAICodex`` (ChatGPT codex backend, forced ``store=False`` /
@@ -63,14 +65,32 @@ def _chatgpt_store_path() -> Path:
     return DEFAULT_STORE_PATH
 
 
+def _reject_explicit_api_key(provider: str, model_kwargs: dict[str, object], *keys: str) -> None:
+    """Raise when a caller-supplied API key would bypass subscription OAuth.
+
+    Subscription auth, once enabled, must never be silently bypassed by an
+    explicit credential (OPE-144 review decision). The key value is never
+    included in the message.
+    """
+    supplied = [key for key in keys if model_kwargs.get(key) is not None]
+    if supplied:
+        raise RuntimeError(
+            f"Subscription auth ({ENV_TOGGLE}) is enabled but an explicit {provider} "
+            f"API key was supplied ({', '.join(supplied)}). Subscription OAuth must "
+            f"never be bypassed; drop the explicit key or unset {ENV_TOGGLE}."
+        )
+
+
 def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | None:
     """Build a ``_ChatOpenAICodex`` for ``model_name``, or ``None`` to fall through.
 
+    Raises on an explicit caller API key (see :func:`_reject_explicit_api_key`).
     Drops the kwargs ``_ChatOpenAICodex`` forces or pins (it raises on
     conflicting values) and replicates the two stateless-responses kwargs
     ``make_model`` would otherwise apply after this branch returns
     (``output_version`` and encrypted-reasoning ``include``).
     """
+    _reject_explicit_api_key("OpenAI", model_kwargs, "api_key", "openai_api_key")
     store_path = _chatgpt_store_path()
     if not store_path.is_file():
         _warn_once(
@@ -84,17 +104,6 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
 
     from langchain_openai.chat_models.codex import _ChatOpenAICodex
     from langchain_openai.chatgpt_oauth import _FileChatGPTOAuthTokenProvider
-
-    if model_kwargs.get("api_key") is not None or model_kwargs.get("openai_api_key") is not None:
-        # An explicit caller credential means API-key auth was requested;
-        # honor it via the fall-through instead of stripping it (the OAuth
-        # model rejects api_key kwargs as conflicting).
-        _warn_once(
-            "openai-explicit-api-key",
-            "Subscription auth enabled but an explicit api_key was supplied; "
-            "using the API-key path for this model.",
-        )
-        return None
 
     kwargs: dict[str, Any] = dict(model_kwargs)
     # max_tokens: the codex backend rejects the mapped max_output_tokens field
@@ -126,10 +135,13 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
 def _anthropic_model(model_name: str, model_kwargs: dict[str, object]) -> Any | None:
     """Build a ``ChatClaudeCode`` for ``model_name``, or ``None`` to fall through.
 
+    Raises on an explicit caller API key (see :func:`_reject_explicit_api_key`).
     The credential store is probed up front so an unauthenticated machine
     falls back to API-key auth at construction time instead of failing every
     model call at request time.
     """
+    _reject_explicit_api_key("Anthropic", model_kwargs, "api_key", "anthropic_api_key")
+
     import asyncio
 
     from .claude_code_model import ChatClaudeCode, ClaudeCodeTokenProvider
@@ -180,6 +192,8 @@ def subscription_model(model_id: str, model_kwargs: dict[str, object]) -> Any | 
     ``None`` means "no subscription route": the caller (``make_model``) falls
     through to the API-key ``init_chat_model`` path unchanged. Never raises
     for a missing or unreadable credential store — fail-open, log-don't-raise.
+    The one exception: an explicit caller API key for a subscription provider
+    raises instead of bypassing OAuth (:func:`_reject_explicit_api_key`).
     """
     if not _enabled():
         return None

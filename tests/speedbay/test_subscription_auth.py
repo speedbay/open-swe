@@ -134,13 +134,16 @@ class TestOpenAIBranch:
         )
         assert model is not None
 
-    def test_explicit_api_key_falls_through_to_api_key_path(
+    def test_explicit_api_key_raises_instead_of_bypassing_oauth(
         self, monkeypatch: pytest.MonkeyPatch, chatgpt_store: Path
     ) -> None:
-        """A caller-supplied api_key means API-key auth was requested; honor it."""
+        """Enabled subscription auth must never be bypassed by an explicit key."""
         monkeypatch.setenv(ENV_TOGGLE, "1")
-        assert subscription_model(_OPENAI_ID, {"api_key": "sk-explicit"}) is None
-        assert subscription_model(_OPENAI_ID, {"openai_api_key": "sk-explicit"}) is None
+        for key_name in ("api_key", "openai_api_key"):
+            with pytest.raises(RuntimeError, match="never be bypassed") as excinfo:
+                subscription_model(_OPENAI_ID, {key_name: "sk-explicit"})
+            assert key_name in str(excinfo.value)
+            assert "sk-explicit" not in str(excinfo.value)
 
     def test_caller_include_list_is_not_mutated(
         self, monkeypatch: pytest.MonkeyPatch, chatgpt_store: Path
@@ -343,6 +346,33 @@ class TestAnthropicBranch:
         model = make_model("anthropic:claude-opus-5", max_tokens=64)
         assert isinstance(model, ChatClaudeCode)
         assert model.token_provider.path == store
+
+    def test_explicit_api_key_raises_instead_of_bypassing_oauth(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Enabled subscription auth must never be bypassed by an explicit key."""
+        store = tmp_path / "credentials.json"
+        _write_claude_store(store, expires_in_seconds=3600)
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setattr(claude_code_model, "_default_credentials_path", lambda: store)
+        monkeypatch.setattr(claude_code_model, "_default_use_keychain", lambda: False)
+        for key_name in ("api_key", "anthropic_api_key"):
+            with pytest.raises(RuntimeError, match="never be bypassed") as excinfo:
+                subscription_model("anthropic:claude-opus-5", {key_name: "sk-ant-explicit"})
+            assert key_name in str(excinfo.value)
+            assert "sk-ant-explicit" not in str(excinfo.value)
+
+    def test_environment_api_key_does_not_bypass_subscription_oauth(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        store = tmp_path / "credentials.json"
+        _write_claude_store(store, expires_in_seconds=3600)
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "environment-only-key")
+        monkeypatch.setattr(claude_code_model, "_default_credentials_path", lambda: store)
+        monkeypatch.setattr(claude_code_model, "_default_use_keychain", lambda: False)
+        model = make_model("anthropic:claude-opus-5", max_tokens=64)
+        assert isinstance(model, ChatClaudeCode)
 
     def test_unreadable_store_falls_through_to_api_key_path(
         self,
