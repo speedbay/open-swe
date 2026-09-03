@@ -5,7 +5,10 @@ from typing import Any, Literal, TypedDict, Unpack, cast
 from langchain.chat_models import init_chat_model
 
 from ..dashboard.options import DEFAULT_MODEL_ID
-from ..speedbay.subscription_auth import subscription_model  # SPEEDBAY REGISTRATION (OPE-60)
+from ..speedbay.subscription_auth import (  # SPEEDBAY REGISTRATION (OPE-60, OPE-145)
+    subscription_auth_enabled,
+    subscription_model,
+)
 from .gateway import gateway_env_default, gateway_overrides
 
 OPENAI_RESPONSES_WS_BASE_URL = "wss://api.openai.com/v1"
@@ -134,25 +137,26 @@ def make_model(model_id: str, *, use_gateway: bool | None = None, **kwargs: Unpa
     if model_id.startswith(_TIMEOUT_PROVIDER_PREFIXES):
         model_kwargs.setdefault("timeout", DEFAULT_REQUEST_TIMEOUT_SECONDS)
 
-    # SPEEDBAY REGISTRATION (OPE-60): subscription OAuth auth. Must run before
-    # the openai: base_url default below (the OAuth model pins its own base URL
-    # and raises on conflict) and wins over gateway routing when both are
-    # enabled. Fail-open: None means unchanged API-key behavior. Logic lives in
+    # SPEEDBAY REGISTRATION (OPE-60, OPE-145): subscription OAuth auth. Check
+    # the current toggle before the subscription cache so disabling it takes
+    # effect without a restart. Must run before the openai: base_url default
+    # below and wins over gateway routing when enabled. Logic lives in
     # agent/speedbay/subscription_auth.py; merge contract: FORK.md.
-    subscription_key = (
-        f"speedbay-subscription:{model_id}",
-        use_gateway,
-        None,
-        _freeze_model_kwargs(model_kwargs),
-        _loop_cache_key(),
-    )
-    cached_subscription = _MODEL_CACHE.get(subscription_key)
-    if cached_subscription is not None:
-        return cached_subscription
-    subscription = subscription_model(model_id, model_kwargs)
-    if subscription is not None:
-        _MODEL_CACHE[subscription_key] = subscription
-        return subscription
+    if subscription_auth_enabled():
+        subscription_key = (
+            f"speedbay-subscription:{model_id}",
+            use_gateway,
+            None,
+            _freeze_model_kwargs(model_kwargs),
+            _loop_cache_key(),
+        )
+        cached_subscription = _MODEL_CACHE.get(subscription_key)
+        if cached_subscription is not None:
+            return cached_subscription
+        subscription = subscription_model(model_id, model_kwargs)
+        if subscription is not None:
+            _MODEL_CACHE[subscription_key] = subscription
+            return subscription
 
     if model_id.startswith("openai:"):
         # Direct-provider default: Responses API over the OpenAI websocket base.

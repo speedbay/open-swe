@@ -8,6 +8,7 @@ files and refresh HTTP is monkeypatched; no real credentials are read.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -62,6 +63,63 @@ def captured_init(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     monkeypatch.setattr(model_module, "init_chat_model", fake_init)
     return captured
+
+
+class TestToggleTransitions:
+    """AC: every construction follows the current normalized toggle state."""
+
+    def test_disabling_toggle_bypasses_cached_subscription_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        subscription = object()
+        api_key = object()
+        monkeypatch.setattr(model_module, "subscription_model", lambda *_: subscription)
+        monkeypatch.setattr(model_module, "init_chat_model", lambda **_: api_key)
+
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        assert make_model(_OPENAI_ID) is subscription
+        monkeypatch.setenv(ENV_TOGGLE, "0")
+        assert make_model(_OPENAI_ID) is api_key
+
+    @pytest.mark.parametrize("enabled", ["1", " TRUE ", "YeS", " on "])
+    def test_enabling_toggle_selects_subscription_model(
+        self, monkeypatch: pytest.MonkeyPatch, enabled: str
+    ) -> None:
+        subscription = object()
+        api_key = object()
+        monkeypatch.setattr(model_module, "subscription_model", lambda *_: subscription)
+        monkeypatch.setattr(model_module, "init_chat_model", lambda **_: api_key)
+
+        monkeypatch.setenv(ENV_TOGGLE, "0")
+        assert make_model(_OPENAI_ID) is api_key
+        monkeypatch.setenv(ENV_TOGGLE, enabled)
+        assert make_model(_OPENAI_ID) is subscription
+
+    def test_same_state_reuse_remains_event_loop_isolated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = 0
+
+        def build_subscription(*_: object) -> object:
+            nonlocal calls
+            calls += 1
+            return object()
+
+        async def build_model() -> object:
+            return make_model(_OPENAI_ID)
+
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setattr(model_module, "subscription_model", build_subscription)
+        first_loop = asyncio.new_event_loop()
+        second_loop = asyncio.new_event_loop()
+        try:
+            first = first_loop.run_until_complete(build_model())
+            assert first_loop.run_until_complete(build_model()) is first
+            assert second_loop.run_until_complete(build_model()) is not first
+        finally:
+            first_loop.close()
+            second_loop.close()
+        assert calls == 2
 
 
 class TestDisabledIsByteIdentical:

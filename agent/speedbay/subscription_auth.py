@@ -53,7 +53,7 @@ def _warn_once(key: str, message: str, *args: object) -> None:
     logger.warning(message, *args)
 
 
-def _enabled() -> bool:
+def subscription_auth_enabled() -> bool:
     """Whether subscription auth is opted in via ``SPEEDBAY_SUBSCRIPTION_AUTH``."""
     return (os.environ.get(ENV_TOGGLE) or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -195,7 +195,7 @@ def subscription_model(model_id: str, model_kwargs: dict[str, object]) -> Any | 
     The one exception: an explicit caller API key for a subscription provider
     raises instead of bypassing OAuth (:func:`_reject_explicit_api_key`).
     """
-    if not _enabled():
+    if not subscription_auth_enabled():
         return None
     provider, _, model_name = model_id.partition(":")
     if provider == "openai":

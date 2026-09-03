@@ -259,7 +259,9 @@ Do **not** copy the token store between machines — refresh tokens rotate on
 use, so two hosts sharing a copied store invalidate each other. Log in once
 per host instead. This is an unofficial subscription-token path (the class
 warns "experimental and unofficial" at construction); the toggle keeps
-API-key billing the default. Restart the backend after changing the toggle.
+API-key billing the default. A toggle change applies to subsequent `make_model`
+calls without a backend restart; model objects already returned keep their
+original authentication source.
 
 ## Linear trigger
 
