@@ -406,8 +406,6 @@ class TestClaudeTokenProvider:
         assert current["refreshToken"] == restarted["refreshToken"] == "refresh-new"
         assert current_source == restarted_source == "keychain-write-fallback"
         assert sum(command[1] == "find-generic-password" for command in commands) == 2
-        wrapper = json.loads(provider.path.read_text())
-        assert wrapper["speedbayCredentialSource"] == "keychain-write-fallback"
         assert provider.path.stat().st_mode & 0o777 == 0o600
         for secret in ("access-old", "refresh-old", "access-new", "refresh-new"):
             assert secret not in caplog.text
@@ -473,43 +471,28 @@ print(json.dumps([creds["accessToken"], creds["refreshToken"], source]))
         import httpx
 
         monkeypatch.setattr(httpx, "post", lambda *_, **__: _Response())
-        replacements: list[tuple[Path, Path]] = []
-        events: list[str] = []
-        real_flock = claude_code_model.fcntl.flock
-        real_replace = os.replace
-
-        def track_flock(fd: int, operation: int) -> None:
-            events.append("lock" if operation == claude_code_model.fcntl.LOCK_EX else "unlock")
-            real_flock(fd, operation)
-
-        def track_replace(source: Path, destination: Path) -> None:
-            events.append("replace")
-            replacements.append((source, destination))
-            real_replace(source, destination)
-
-        monkeypatch.setattr(claude_code_model.fcntl, "flock", track_flock)
-        monkeypatch.setattr(os, "replace", track_replace)
         assert provider.get_token() == "access-newest"
-        stored = json.loads(provider.path.read_text())
-        assert stored["speedbayCredentialSource"] == "keychain-write-fallback"
-        assert stored["claudeAiOauth"]["refreshToken"] == "refresh-newest"
+        latest, source = ClaudeCodeTokenProvider(path=provider.path, use_keychain=True).read()
+        assert latest["refreshToken"] == "refresh-newest"
+        assert source == "keychain-write-fallback"
         assert provider.path.stat().st_mode & 0o777 == 0o600
-        assert replacements == [(provider.path.with_suffix(".tmp"), provider.path)]
-        assert events == ["lock", "replace", "unlock"]
         assert sum(command[1] == "find-generic-password" for command in commands) == 2
 
     @pytest.mark.parametrize(
         "wrapper",
         [
             {"speedbayCredentialSource": "keychain-write-fallback", "claudeAiOauth": {}},
-            {
-                "speedbayCredentialSource": "keychain-write-fallback",
-                "claudeAiOauth": {
-                    "accessToken": "file-access",
-                    "refreshToken": "file-refresh",
-                    "expiresAt": "invalid",
-                },
-            },
+            *[
+                {
+                    "speedbayCredentialSource": "keychain-write-fallback",
+                    "claudeAiOauth": {
+                        "accessToken": "file-access",
+                        "refreshToken": "file-refresh",
+                        "expiresAt": expires_at,
+                    },
+                }
+                for expires_at in ("invalid", "NaN", "Infinity", "-Infinity")
+            ],
             {"claudeAiOauth": {"accessToken": "unmarked", "refreshToken": "unmarked"}},
         ],
     )

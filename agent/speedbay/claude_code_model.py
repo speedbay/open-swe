@@ -28,6 +28,7 @@ import asyncio
 import fcntl
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -78,10 +79,10 @@ def _valid_marked_credentials(creds: dict[str, Any]) -> bool:
     ):
         return False
     try:
-        float(creds.get("expiresAt") or 0)
+        expires_at = float(creds.get("expiresAt") or 0)
     except (TypeError, ValueError):
         return False
-    return True
+    return math.isfinite(expires_at)
 
 
 @dataclass
