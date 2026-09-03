@@ -28,6 +28,7 @@ import asyncio
 import fcntl
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -56,6 +57,8 @@ _CLAUDE_CLI_VERSION = "2.1.75"
 _TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 _CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 _KEYCHAIN_SERVICE = "Claude Code-credentials"
+_CREDENTIAL_SOURCE_KEY = "speedbayCredentialSource"
+_KEYCHAIN_WRITE_FALLBACK = "keychain-write-fallback"
 _REFRESH_SKEW_SECONDS = 300.0
 _BEARER_KWARG = "_claude_bearer"
 
@@ -68,6 +71,18 @@ def _default_credentials_path() -> Path:
 def _default_use_keychain() -> bool:
     """Whether to prefer the macOS Keychain source (seam for tests)."""
     return sys.platform == "darwin"
+
+
+def _valid_marked_credentials(creds: dict[str, Any]) -> bool:
+    if not all(
+        isinstance(creds.get(key), str) and creds[key] for key in ("accessToken", "refreshToken")
+    ):
+        return False
+    try:
+        expires_at = float(creds.get("expiresAt") or 0)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(expires_at)
 
 
 @dataclass
@@ -87,6 +102,17 @@ class ClaudeCodeTokenProvider:
 
     def read(self) -> tuple[dict[str, Any], str]:
         """Return ``(claudeAiOauth credentials, source)``; raise when unreadable."""
+        try:
+            wrapper = json.loads(self.path.read_text())
+            creds = wrapper.get("claudeAiOauth")
+            if (
+                wrapper.get(_CREDENTIAL_SOURCE_KEY) == _KEYCHAIN_WRITE_FALLBACK
+                and isinstance(creds, dict)
+                and _valid_marked_credentials(creds)
+            ):
+                return creds, _KEYCHAIN_WRITE_FALLBACK
+        except Exception:
+            pass
         if self.use_keychain:
             try:
                 proc = subprocess.run(
@@ -155,7 +181,6 @@ class ClaudeCodeTokenProvider:
 
     def _write_back(self, creds: dict[str, Any], source: str) -> None:
         """Persist rotated credentials to their source store."""
-        payload = json.dumps({"claudeAiOauth": creds})
         if source == "keychain":
             try:
                 subprocess.run(
@@ -168,7 +193,7 @@ class ClaudeCodeTokenProvider:
                         "-s",
                         _KEYCHAIN_SERVICE,
                         "-w",
-                        payload,
+                        json.dumps({"claudeAiOauth": creds}),
                     ],
                     check=True,
                     capture_output=True,
@@ -178,20 +203,23 @@ class ClaudeCodeTokenProvider:
             except Exception as exc:
                 # Refresh tokens rotate on use: losing the rotated pair bricks
                 # the store, so persist to the file fallback instead of dropping.
-                # Stop preferring the now-stale Keychain entry for this process,
-                # or the next refresh would read the consumed token from it.
-                # ponytail: process-local demotion; a restart re-prefers the
-                # Keychain and its first refresh fails once before the operator
-                # re-runs `claude` login.
                 self.use_keychain = False
-                logger.warning("Keychain write-back failed (%s); writing %s", exc, self.path)
+                source = _KEYCHAIN_WRITE_FALLBACK
+                logger.warning(
+                    "Keychain write-back failed (%s); writing %s",
+                    type(exc).__name__,
+                    self.path,
+                )
+        wrapper: dict[str, Any] = {"claudeAiOauth": creds}
+        if source == _KEYCHAIN_WRITE_FALLBACK:
+            wrapper[_CREDENTIAL_SOURCE_KEY] = _KEYCHAIN_WRITE_FALLBACK
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         # Create with 0600 before any secret bytes hit disk; write-then-chmod
         # leaves a umask-default-readable window.
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as handle:
-            handle.write(payload)
+            handle.write(json.dumps(wrapper))
         os.replace(tmp, self.path)
 
     @contextmanager

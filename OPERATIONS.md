@@ -263,6 +263,20 @@ API-key billing the default. A toggle change applies to subsequent `make_model`
 calls without a backend restart; model objects already returned keep their
 original authentication source.
 
+If a Claude refresh succeeds but Keychain write-back fails, the rotated token
+pair is stored in `~/.claude/.credentials.json` with a fallback marker. That
+file remains authoritative across restarts until Keychain is repaired. After a
+successful new `claude` login, verify the Keychain item exists without printing
+its value, then remove the marked fallback:
+
+```bash
+security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 && \
+  rm ~/.claude/.credentials.json
+```
+
+Run the removal only after the Keychain check succeeds. The fallback file
+contains OAuth credentials: never print it or copy it into a sandbox.
+
 ## Linear trigger
 
 A `@openswe` comment on a Linear ticket triggers a run. Setup facts that cost a

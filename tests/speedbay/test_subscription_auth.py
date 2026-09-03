@@ -11,6 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -301,6 +304,39 @@ class TestClaudeTokenProvider:
         _write_claude_store(store, expires_in_seconds=expires_in_seconds)
         return ClaudeCodeTokenProvider(path=store, use_keychain=False)
 
+    def _keychain_write_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> tuple[ClaudeCodeTokenProvider, dict[str, Any], list[list[str]]]:
+        store = tmp_path / "credentials.json"
+        stale = _write_claude_store(store, expires_in_seconds=-10)
+        keychain_payload = json.dumps({"claudeAiOauth": stale}).encode()
+        commands: list[list[str]] = []
+
+        def fake_security(command: list[str], **_: Any) -> subprocess.CompletedProcess[bytes]:
+            commands.append(command)
+            if command[1] == "find-generic-password":
+                return subprocess.CompletedProcess(command, 0, stdout=keychain_payload, stderr=b"")
+            raise subprocess.CalledProcessError(
+                1, command, stderr=b"write failed for access-new refresh-new"
+            )
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return {
+                    "access_token": "access-new",
+                    "refresh_token": "refresh-new",
+                    "expires_in": 3600,
+                }
+
+        import httpx
+
+        monkeypatch.setattr(subprocess, "run", fake_security)
+        monkeypatch.setattr(httpx, "post", lambda *_, **__: _Response())
+        return ClaudeCodeTokenProvider(path=store, use_keychain=True), stale, commands
+
     def test_fresh_token_returned_without_refresh(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -351,6 +387,134 @@ class TestClaudeTokenProvider:
         provider = ClaudeCodeTokenProvider(path=tmp_path / "missing.json", use_keychain=False)
         with pytest.raises(FileNotFoundError):
             provider.read()
+
+    def test_keychain_write_failure_prefers_rotated_file_in_process(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        provider, _, commands = self._keychain_write_failure(monkeypatch, tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger=claude_code_model.__name__):
+            assert provider.get_token() == "access-new"
+
+        current, current_source = provider.read()
+        restarted, restarted_source = ClaudeCodeTokenProvider(
+            path=provider.path, use_keychain=True
+        ).read()
+        assert current["refreshToken"] == restarted["refreshToken"] == "refresh-new"
+        assert current_source == restarted_source == "keychain-write-fallback"
+        assert sum(command[1] == "find-generic-password" for command in commands) == 2
+        assert provider.path.stat().st_mode & 0o777 == 0o600
+        for secret in ("access-old", "refresh-old", "access-new", "refresh-new"):
+            assert secret not in caplog.text
+
+    def test_keychain_write_failure_prefers_rotated_file_after_restart(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        real_run = subprocess.run
+        provider, stale, _ = self._keychain_write_failure(monkeypatch, tmp_path)
+        assert provider.get_token() == "access-new"
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        security = bin_dir / "security"
+        keychain_payload = json.dumps({"claudeAiOauth": stale})
+        security.write_text(
+            f"#!/usr/bin/env python3\nimport sys\nsys.stdout.write({keychain_payload!r})\n"
+        )
+        security.chmod(0o755)
+        script = """
+import json
+import sys
+from pathlib import Path
+from agent.speedbay.claude_code_model import ClaudeCodeTokenProvider
+
+creds, source = ClaudeCodeTokenProvider(path=Path(sys.argv[1]), use_keychain=True).read()
+print(json.dumps([creds["accessToken"], creds["refreshToken"], source]))
+"""
+        result = real_run(
+            [sys.executable, "-c", script, str(provider.path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parents[2],
+            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        )
+        assert json.loads(result.stdout) == [
+            "access-new",
+            "refresh-new",
+            "keychain-write-fallback",
+        ]
+
+    def test_marked_fallback_survives_later_refresh(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        provider, _, commands = self._keychain_write_failure(monkeypatch, tmp_path)
+        assert provider.get_token() == "access-new"
+        wrapper = json.loads(provider.path.read_text())
+        wrapper["claudeAiOauth"]["expiresAt"] = 0
+        provider.path.write_text(json.dumps(wrapper))
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return {
+                    "access_token": "access-newest",
+                    "refresh_token": "refresh-newest",
+                    "expires_in": 3600,
+                }
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "post", lambda *_, **__: _Response())
+        assert provider.get_token() == "access-newest"
+        latest, source = ClaudeCodeTokenProvider(path=provider.path, use_keychain=True).read()
+        assert latest["refreshToken"] == "refresh-newest"
+        assert source == "keychain-write-fallback"
+        assert provider.path.stat().st_mode & 0o777 == 0o600
+        assert sum(command[1] == "find-generic-password" for command in commands) == 2
+
+    @pytest.mark.parametrize(
+        "wrapper",
+        [
+            {"speedbayCredentialSource": "keychain-write-fallback", "claudeAiOauth": {}},
+            *[
+                {
+                    "speedbayCredentialSource": "keychain-write-fallback",
+                    "claudeAiOauth": {
+                        "accessToken": "file-access",
+                        "refreshToken": "file-refresh",
+                        "expiresAt": expires_at,
+                    },
+                }
+                for expires_at in ("invalid", "NaN", "Infinity", "-Infinity")
+            ],
+            {"claudeAiOauth": {"accessToken": "unmarked", "refreshToken": "unmarked"}},
+        ],
+    )
+    def test_invalid_or_unmarked_fallback_does_not_override_keychain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, wrapper: dict[str, Any]
+    ) -> None:
+        store = tmp_path / "credentials.json"
+        store.write_text(json.dumps(wrapper))
+        keychain = {
+            "accessToken": "keychain-access",
+            "refreshToken": "keychain-refresh",
+            "expiresAt": int((time.time() + 3600) * 1000),
+        }
+
+        def fake_security(command: list[str], **_: Any) -> subprocess.CompletedProcess[bytes]:
+            payload = json.dumps({"claudeAiOauth": keychain}).encode()
+            return subprocess.CompletedProcess(command, 0, stdout=payload, stderr=b"")
+
+        monkeypatch.setattr(subprocess, "run", fake_security)
+        creds, source = ClaudeCodeTokenProvider(path=store, use_keychain=True).read()
+        assert creds == keychain
+        assert source == "keychain"
 
 
 class TestChatClaudeCode:
