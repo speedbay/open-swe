@@ -10,7 +10,7 @@ from agent.utils.sandbox_state import SandboxUnreachableError
 
 
 def _middleware(cls: type[Any], thread_id: str) -> Any:
-    middleware = cls.__new__(cls)
+    middleware = object.__new__(cls)
     middleware._thread_id = thread_id
     middleware._config = {"configurable": {}}
     return middleware
@@ -92,6 +92,7 @@ async def _assert_awaited(
         await middleware._prepare({"messages": []}, MagicMock())
     assert completed and excinfo.value is error
     if module is reviewer:
+        assert notify_mock.await_args is not None
         assert notify_mock.await_args.kwargs["replacement_attempted"] is True
 
 
