@@ -12,6 +12,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from fastapi import HTTPException
 from langgraph_sdk import get_client
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -60,6 +61,7 @@ class TeamSettingsUpdate(BaseModel):
     default_grouping_reasoning_effort: str | None = None
     default_chat_model: str | None = None
     default_chat_reasoning_effort: str | None = None
+    updated_at: str | None = None
 
     @field_validator("org_guidelines", mode="before")
     @classmethod
@@ -133,6 +135,13 @@ class TeamSettingsUpdate(BaseModel):
             self.default_chat_model,
             self.default_chat_reasoning_effort,
         )
+        for model_field, effort_field in _MODEL_PAIR_FIELDS:
+            if (
+                model_field in provided_fields
+                and effort_field not in provided_fields
+                and getattr(self, effort_field) is not None
+            ):
+                provided_fields.add(effort_field)
         _validate_model_effort_pair(
             self.default_agent_model, self.default_agent_reasoning_effort, "agent"
         )
@@ -204,16 +213,6 @@ def _normalize_stale_model_pair(
     if canonical is not None:
         return canonical
     return model, effort
-
-
-_MODEL_PAIR_FIELDS: tuple[tuple[str, str], ...] = (
-    ("default_agent_model", "default_agent_reasoning_effort"),
-    ("default_agent_subagent_model", "default_agent_subagent_reasoning_effort"),
-    ("default_reviewer_model", "default_reviewer_reasoning_effort"),
-    ("default_reviewer_subagent_model", "default_reviewer_subagent_reasoning_effort"),
-    ("default_grouping_model", "default_grouping_reasoning_effort"),
-    ("default_chat_model", "default_chat_reasoning_effort"),
-)
 
 
 def normalize_team_settings_for_response(settings: dict[str, Any]) -> dict[str, Any]:
@@ -322,7 +321,9 @@ async def upsert_team_settings(update: TeamSettingsUpdate) -> dict[str, Any]:
         item = await store.get_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY)
         existing = item.get("value") if isinstance(item, dict) else getattr(item, "value", None)
         value: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
-        value.update(update.model_dump(exclude_unset=True))
+        if "updated_at" in update.model_fields_set and update.updated_at != value.get("updated_at"):
+            raise HTTPException(409, "team settings changed; reload and retry")
+        value.update(update.model_dump(exclude_unset=True, exclude={"updated_at"}))
         if value.get("fable_enabled") is not True:
             # ZDR kill switch over the *merged* record: a partial update such as
             # {"fable_enabled": false} must also convert previously stored Fable

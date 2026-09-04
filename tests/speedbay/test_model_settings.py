@@ -161,6 +161,27 @@ async def test_invalidate_discards_in_flight_stale_load() -> None:
     assert await ttl_cache.cached("k", 60, fresh_loader) == "fresh"
 
 
+async def test_clear_discards_in_flight_stale_load() -> None:
+    ttl_cache.clear()
+    release = asyncio.Event()
+
+    async def stale_loader() -> str:
+        await release.wait()
+        return "stale"
+
+    in_flight = asyncio.create_task(ttl_cache.cached("k", 60, stale_loader))
+    await asyncio.sleep(0)
+    ttl_cache.clear()
+    release.set()
+    assert await in_flight == "stale"
+
+    async def fresh_loader() -> str:
+        return "fresh"
+
+    assert await ttl_cache.cached("k", 60, fresh_loader) == "fresh"
+    ttl_cache.clear()
+
+
 async def _runtime_agent_model_ids(thread_id: str) -> list[str]:
     """Model ids the public runtime path (server.get_agent) resolves, with only
     the sandbox/graph seams stubbed; store reads and TTL caches stay real."""
@@ -252,6 +273,46 @@ async def test_dashboard_partial_update_preserves_committed_defaults(
     assert stored["default_agent_model"] == MODEL
     assert stored["default_agent_subagent_reasoning_effort"] == EFFORT
     assert stored["unrelated"] == "preserve"
+
+
+async def test_stale_dashboard_snapshot_cannot_restore_previous_agent_defaults(
+    fake_store: FakeStore,
+) -> None:
+    old_model = "anthropic:claude-opus-5"
+    fake_store.value = {
+        "fable_enabled": False,
+        "default_agent_model": old_model,
+        "default_agent_reasoning_effort": "high",
+        "default_agent_subagent_model": old_model,
+        "default_agent_subagent_reasoning_effort": "high",
+        "updated_at": "2026-09-04T00:00:00+00:00",
+    }
+    stale_snapshot = team_settings.TeamSettingsUpdate(**fake_store.value)
+
+    await _commit()
+    with pytest.raises(HTTPException, match="team settings changed; reload and retry") as exc_info:
+        await team_settings.upsert_team_settings(stale_snapshot)
+
+    assert exc_info.value.status_code == 409
+    assert fake_store.value["default_agent_model"] == MODEL
+    assert fake_store.value["default_agent_subagent_model"] == MODEL
+
+
+async def test_partial_stale_model_update_persists_synthesized_effort(
+    fake_store: FakeStore,
+) -> None:
+    fake_store.value = {
+        "fable_enabled": False,
+        "default_agent_model": "anthropic:claude-opus-5",
+        "default_agent_reasoning_effort": "max",
+    }
+
+    await team_settings.upsert_team_settings(
+        team_settings.TeamSettingsUpdate(default_agent_model="openai:gpt-5.5")
+    )
+
+    assert fake_store.value["default_agent_model"] == "openai:gpt-5.6-sol"
+    assert fake_store.value["default_agent_reasoning_effort"] == "xhigh"
 
 
 async def test_partial_fable_disable_converts_stored_fable_defaults(
