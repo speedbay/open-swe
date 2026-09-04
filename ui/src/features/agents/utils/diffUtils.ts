@@ -14,11 +14,21 @@ const DIFF_OVERFLOW_STORAGE_KEY = "open-swe.diff.overflow"
 const diffOverflowListeners = new Set<() => void>()
 let storageListenerAttached = false
 
+// SPEEDBAY DEVIATION (OPE-135): Diff preferences remain available when storage is denied.
+function isStorageSecurityError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "SecurityError"
+}
+
 export function readStoredDiffOverflow(): DiffOverflow {
   if (typeof window === "undefined") return "scroll"
-  return window.localStorage.getItem(DIFF_OVERFLOW_STORAGE_KEY) === "wrap"
-    ? "wrap"
-    : "scroll"
+  try {
+    return window.localStorage.getItem(DIFF_OVERFLOW_STORAGE_KEY) === "wrap"
+      ? "wrap"
+      : "scroll"
+  } catch (error) {
+    if (isStorageSecurityError(error)) return "scroll"
+    throw error
+  }
 }
 
 function subscribeToDiffOverflow(listener: () => void): () => void {
@@ -41,14 +51,18 @@ function subscribeToDiffOverflow(listener: () => void): () => void {
 }
 
 function handleDiffOverflowStorage(event: StorageEvent): void {
-  if (event.key !== DIFF_OVERFLOW_STORAGE_KEY) return
+  if (event.key !== DIFF_OVERFLOW_STORAGE_KEY && event.key !== null) return
   diffOverflowListeners.forEach((listener) => listener())
 }
 
 export function writeStoredDiffOverflow(overflow: DiffOverflow): void {
   if (typeof window === "undefined") return
-  if (readStoredDiffOverflow() === overflow) return
-  window.localStorage.setItem(DIFF_OVERFLOW_STORAGE_KEY, overflow)
+  try {
+    if (readStoredDiffOverflow() === overflow) return
+    window.localStorage.setItem(DIFF_OVERFLOW_STORAGE_KEY, overflow)
+  } catch (error) {
+    if (!isStorageSecurityError(error)) throw error
+  }
   diffOverflowListeners.forEach((listener) => listener())
 }
 
