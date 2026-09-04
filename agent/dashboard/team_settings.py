@@ -96,6 +96,10 @@ class TeamSettingsUpdate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_model_pairs(self) -> TeamSettingsUpdate:
+        # The self-assignments below mark fields as set; snapshot the
+        # caller-provided set and restore it so upsert_team_settings can merge
+        # with exclude_unset and preserve fields the caller never sent.
+        provided_fields = set(self.model_fields_set)
         self.default_agent_model, self.default_agent_reasoning_effort = _normalize_stale_model_pair(
             self.default_agent_model,
             self.default_agent_reasoning_effort,
@@ -173,6 +177,7 @@ class TeamSettingsUpdate(BaseModel):
                     )
                     setattr(self, model_field, new_model)
                     setattr(self, effort_field, new_effort)
+        self.__pydantic_fields_set__ = provided_fields
         return self
 
 
@@ -298,36 +303,22 @@ async def get_team_settings() -> dict[str, Any]:
 
 
 async def upsert_team_settings(update: TeamSettingsUpdate) -> dict[str, Any]:
-    value: dict[str, Any] = {
-        "review_draft_prs": update.review_draft_prs,
-        "pr_summaries": update.pr_summaries,
-        "review_trace_links": update.review_trace_links,
-        "gateway_enabled": update.gateway_enabled,
-        "fable_enabled": update.fable_enabled,
-        "review_tracing_project": update.review_tracing_project,
-        "org_guidelines": update.org_guidelines,
-        "default_agent_model": update.default_agent_model,
-        "default_agent_reasoning_effort": update.default_agent_reasoning_effort,
-        "default_agent_subagent_model": update.default_agent_subagent_model,
-        "default_agent_subagent_reasoning_effort": update.default_agent_subagent_reasoning_effort,
-        "default_repo": update.default_repo,
-        "default_reviewer_model": update.default_reviewer_model,
-        "default_reviewer_reasoning_effort": update.default_reviewer_reasoning_effort,
-        "default_reviewer_subagent_model": update.default_reviewer_subagent_model,
-        "default_reviewer_subagent_reasoning_effort": update.default_reviewer_subagent_reasoning_effort,
-        "default_grouping_model": update.default_grouping_model,
-        "default_grouping_reasoning_effort": update.default_grouping_reasoning_effort,
-        "default_chat_model": update.default_chat_model,
-        "default_chat_reasoning_effort": update.default_chat_reasoning_effort,
-        "updated_at": datetime.now(UTC).isoformat(),
-    }
     # SPEEDBAY DEVIATION (OPE-134; see FORK.md): serializes this shared record with the
-    # host-only agent-default read/merge/write operation.
+    # host-only agent-default read/merge/write operation, and merges only the fields
+    # the caller explicitly set, so a partial update (or a client whose snapshot
+    # predates another writer) cannot null out concurrently written settings such
+    # as the host-committed agent model defaults.
     from ..speedbay.model_settings import team_settings_commit_lock
 
     async with team_settings_commit_lock:
-        await _client().store.put_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY, value)
-    return value
+        store = _client().store
+        item = await store.get_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY)
+        existing = item.get("value") if isinstance(item, dict) else getattr(item, "value", None)
+        value: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        value.update(update.model_dump(exclude_unset=True))
+        value["updated_at"] = datetime.now(UTC).isoformat()
+        await store.put_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY, value)
+    return await get_team_settings()
 
 
 async def get_team_default_repo() -> dict[str, str] | None:

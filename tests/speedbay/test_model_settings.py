@@ -169,6 +169,62 @@ async def test_commit_replaces_warmed_effective_runtime_pair(fake_store: FakeSto
     assert response.subagent.model_dump() == {"model_id": MODEL, "effort": EFFORT}
 
 
+async def test_commit_invalidates_inherited_chat_default(fake_store: FakeStore) -> None:
+    """Chat inherits the agent default when no chat-specific model is set, so a
+    commit must also invalidate the cached chat default."""
+    from agent import chat
+
+    fake_store.value = {
+        "fable_enabled": False,
+        "default_agent_model": "anthropic:claude-opus-5",
+        "default_agent_reasoning_effort": "high",
+    }
+    assert await chat._cached_team_chat_model() == ("anthropic:claude-opus-5", "high")
+    await _commit()
+    assert await chat._cached_team_chat_model() == (MODEL, EFFORT)
+
+
+async def test_dashboard_partial_update_preserves_committed_defaults(
+    fake_store: FakeStore,
+) -> None:
+    """An upsert that omits the model fields must not null out a committed
+    agent default."""
+    await _commit()
+    await team_settings.upsert_team_settings(
+        team_settings.TeamSettingsUpdate(org_guidelines="only guidelines")
+    )
+
+    stored = fake_store.value
+    assert stored is not None
+    assert stored["org_guidelines"] == "only guidelines"
+    assert stored["default_agent_model"] == MODEL
+    assert stored["default_agent_subagent_reasoning_effort"] == EFFORT
+    assert stored["unrelated"] == "preserve"
+
+
+async def test_route_rejects_non_host_clients(fake_store: FakeStore) -> None:
+    """The route is host-only: only direct loopback clients, never proxied
+    (X-Forwarded-For) or remote traffic."""
+    import httpx
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(model_settings.model_settings_router)
+    body = {"model_id": MODEL, "effort": EFFORT}
+    path = "/speedbay/model-settings/agent-default"
+
+    async def put(client_addr: tuple[str, int], headers: dict[str, str] | None = None):
+        transport = httpx.ASGITransport(app=app, client=client_addr)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.put(path, json=body, headers=headers)
+
+    assert (await put(("127.0.0.1", 1234))).status_code == 200
+    assert (await put(("10.0.0.5", 1234))).status_code == 403
+    assert (
+        await put(("127.0.0.1", 1234), headers={"x-forwarded-for": "203.0.113.9"})
+    ).status_code == 403
+
+
 def test_cli_nonzero_on_failed_commit(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -139,6 +139,8 @@ async def _cached_gateway_enabled() -> bool:
 
 
 async def _cached_team_chat_model() -> tuple[str, str]:
+    # Key format is mirrored by agent.speedbay.model_settings._cache_keys, which
+    # invalidates it when the agent default (inherited here) is committed.
     return await ttl_cache.cached(
         f"team-default-model:chat:{id(get_team_default_model)}",
         60,

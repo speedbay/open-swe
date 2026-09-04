@@ -6,7 +6,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from langgraph_sdk import get_client
 from pydantic import BaseModel, ConfigDict
 
@@ -16,12 +16,35 @@ from ..dashboard.options import (
     gate_fable_model,
     model_supports_effort,
 )
-from ..dashboard.team_settings import TEAM_SETTINGS_KEY, TEAM_SETTINGS_NAMESPACE
+from ..dashboard.team_settings import (
+    TEAM_SETTINGS_KEY,
+    TEAM_SETTINGS_NAMESPACE,
+    get_team_default_model,
+)
 from ..utils import ttl_cache
 
 team_settings_commit_lock = asyncio.Lock()
+
+
+def _require_host_client(request: Request) -> None:
+    """Host-only enforcement in code, not just proxy config: this route changes
+    the workspace-wide model defaults, so only a direct loopback client (the
+    host CLI) may call it. Proxied traffic always carries X-Forwarded-For
+    (Caddy and cloudflared append it), so it is rejected even if the prefix
+    were ever added to the public proxy."""
+    client = request.client
+    if (
+        client is None
+        or client.host not in ("127.0.0.1", "::1")
+        or "x-forwarded-for" in request.headers
+    ):
+        raise HTTPException(403, "host-only route")
+
+
 model_settings_router = APIRouter(
-    prefix="/speedbay/model-settings", tags=["speedbay-model-settings"]
+    prefix="/speedbay/model-settings",
+    tags=["speedbay-model-settings"],
+    dependencies=[Depends(_require_host_client)],
 )
 
 
@@ -51,12 +74,15 @@ def _item_value(item: object) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _cache_keys() -> tuple[str, str]:
+def _cache_keys() -> tuple[str, str, str]:
     from .. import server
 
     return (
         f"team-default-model-pair:agent:{id(server.get_team_default_model_pair)}",
         f"team:fable-enabled:{id(server.get_team_fable_enabled)}",
+        # agent.chat._cached_team_chat_model caches get_team_default_model("chat"),
+        # which inherits the agent default when no chat-specific model is set.
+        f"team-default-model:chat:{id(get_team_default_model)}",
     )
 
 
@@ -84,9 +110,8 @@ async def commit_agent_default_model(update: AgentDefaultModelUpdate) -> AgentDe
         )
         await store.put_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY, value)
 
-        agent_cache_key, fable_cache_key = _cache_keys()
-        ttl_cache.invalidate(agent_cache_key)
-        ttl_cache.invalidate(fable_cache_key)
+        for cache_key in _cache_keys():
+            ttl_cache.invalidate(cache_key)
         from .. import server
 
         (main, subagent), effective_fable_enabled = await asyncio.gather(
