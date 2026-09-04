@@ -269,4 +269,9 @@ async def process_linear_issue(  # noqa: PLR0912, PLR0915
         thread_id,
         run.get("run_id") if isinstance(run, dict) else None,
     )
-    await common.post_linear_trace_comment(issue_id, thread_id, triggering_comment_id)
+    # SPEEDBAY DEVIATION (OPE-158): the run dispatch above is the delivery commit
+    # point; a best-effort trace comment must not reopen the webhook claim.
+    try:
+        await common.post_linear_trace_comment(issue_id, thread_id, triggering_comment_id)
+    except Exception:  # noqa: BLE001
+        common.logger.exception("Failed to post Linear trace comment after run dispatch")
