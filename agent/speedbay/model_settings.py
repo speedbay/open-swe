@@ -70,8 +70,12 @@ def _client():
 
 
 def _item_value(item: object) -> dict[str, Any]:
+    if item is None:
+        return {}
     value = item.get("value") if isinstance(item, dict) else getattr(item, "value", None)
-    return dict(value) if isinstance(value, dict) else {}
+    if not isinstance(value, dict):
+        raise HTTPException(500, "malformed team settings record")
+    return dict(value)
 
 
 def _cache_keys() -> tuple[str, str, str]:

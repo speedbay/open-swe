@@ -35,12 +35,12 @@ all survived, and re-add any a merge dropped (each is marked in-code with a
 | 6 | `task == "verify_sweep"` scheduler branch (OPE-42) | inside `_launch()` in `agent/scheduler.py`, after the `reconcile` branch; logic lives in `agent/speedbay/verify_sweep.py`. The hourly cron is ensured idempotently at boot (registration #3); `speedbay/ensure_verify_sweep_cron.py` is list/inspect only |
 | 7 | `speedbay_linear_guard.is_duplicate_comment(...)` duplicate-delivery dedup (OPE-56) | inside `linear_webhook()` in `agent/webhooks/linear_routes.py`, immediately before background-task dispatch after validation and repo resolution; logic lives in `agent/speedbay/linear_guard.py` |
 | 8 | Toggle-guarded `subscription_model(...)` subscription-OAuth block (OPE-60, OPE-145) | at the top of `make_model()` in `agent/utils/model.py`, after the retry/timeout defaults and **before** the subscription-cache lookup and `openai:` base_url default (the OAuth model pins its own base URL and raises on conflict), plus its imports above; logic lives in `agent/speedbay/subscription_auth.py` |
-| 8 | `gate_approval_router` import + `include_router` (OPE-10) | `create_app()` in `agent/api/app.py`; logic lives in `agent/speedbay/gate_approval.py` + `agent/speedbay/gate_approval_api.py` |
-| 9 | `export` on `agentsRequest` (OPE-10) | `ui/src/features/agents/lib/api.ts` — one-word visibility change so the fork-added `ui/src/features/agents/lib/gateApproval.ts` reuses the upstream request client |
-| 10 | `GateApprovalCard` render site (OPE-10) | import + one JSX element in `AgentThreadView.tsx`; component and hooks are fork-added files |
-| 11 | `PendingGateApprovalsBanner` render site (OPE-10) | import + one JSX element in `AgentsHome.tsx`; component and hooks are fork-added files |
-| 12 | Wrapped `request_pr_review` tool registration (OPE-100) | direct import in `agent/server.py`; source gate lives in `agent/speedbay/review_request_gate.py` |
-| 13 | `model_settings_router` host-only API registration (OPE-134) | import + `include_router` in `agent/api/app.py`; commit operation lives in `agent/speedbay/model_settings.py` |
+| 9 | `gate_approval_router` import + `include_router` (OPE-10) | `create_app()` in `agent/api/app.py`; logic lives in `agent/speedbay/gate_approval.py` + `agent/speedbay/gate_approval_api.py` |
+| 10 | `export` on `agentsRequest` (OPE-10) | `ui/src/features/agents/lib/api.ts` — one-word visibility change so the fork-added `ui/src/features/agents/lib/gateApproval.ts` reuses the upstream request client |
+| 11 | `GateApprovalCard` render site (OPE-10) | import + one JSX element in `AgentThreadView.tsx`; component and hooks are fork-added files |
+| 12 | `PendingGateApprovalsBanner` render site (OPE-10) | import + one JSX element in `AgentsHome.tsx`; component and hooks are fork-added files |
+| 13 | Wrapped `request_pr_review` tool registration (OPE-100) | direct import in `agent/server.py`; source gate lives in `agent/speedbay/review_request_gate.py` |
+| 14 | `model_settings_router` host-only API registration (OPE-134) | import + `include_router` in `agent/api/app.py`; commit operation lives in `agent/speedbay/model_settings.py` |
 
 OPE-100 deliberately gates review requests by run source rather than comparing the PR
 head with the run's working branch: the Slack/GitHub allowlist covers every current

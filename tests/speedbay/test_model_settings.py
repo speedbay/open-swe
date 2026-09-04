@@ -106,6 +106,18 @@ async def test_commit_writes_one_complete_model_value(fake_store: FakeStore) -> 
     assert written["unrelated"] == "preserve"
 
 
+async def test_commit_rejects_malformed_stored_value_without_write(
+    fake_store: FakeStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fake_store, "value", "malformed")
+
+    with pytest.raises(HTTPException, match="malformed team settings record") as exc_info:
+        await _commit()
+
+    assert exc_info.value.status_code == 500
+    assert fake_store.writes == []
+
+
 async def test_commit_rejects_unsupported_id_without_write(fake_store: FakeStore) -> None:
     with pytest.raises(HTTPException, match="unsupported selectable model") as exc_info:
         await _commit("unknown:model")
