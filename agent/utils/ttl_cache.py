@@ -10,6 +10,8 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 _CACHE: dict[str, tuple[object, float]] = {}
+_EPOCH = 0
+_GENERATIONS: dict[str, int] = {}
 _LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
 _REFRESH_TASKS: dict[tuple[str, int], asyncio.Task[None]] = {}
 
@@ -46,6 +48,7 @@ async def cached(key: str, ttl_seconds: float, loader: Callable[[], Awaitable[T]
 
         stale = entry[0] if entry is not None else None
         has_stale = entry is not None
+        generation = (_EPOCH, _GENERATIONS.get(key, 0))
         try:
             value = await loader()
         except Exception:
@@ -55,7 +58,8 @@ async def cached(key: str, ttl_seconds: float, loader: Callable[[], Awaitable[T]
                 )
                 return cast(T, stale)
             raise
-        _CACHE[key] = (value, now + ttl_seconds)
+        if (_EPOCH, _GENERATIONS.get(key, 0)) == generation:
+            _CACHE[key] = (value, now + ttl_seconds)
         return value
 
 
@@ -63,12 +67,14 @@ async def _refresh_stale_entry(
     key: str, ttl_seconds: float, loader: Callable[[], Awaitable[object]]
 ) -> None:
     async with _lock_for(key):
+        generation = (_EPOCH, _GENERATIONS.get(key, 0))
         try:
             value = await loader()
         except Exception:
             logger.warning("TTL cache background refresh failed for %s", key, exc_info=True)
             return
-        _CACHE[key] = (value, _now() + ttl_seconds)
+        if (_EPOCH, _GENERATIONS.get(key, 0)) == generation:
+            _CACHE[key] = (value, _now() + ttl_seconds)
 
 
 def _schedule_refresh(
@@ -110,11 +116,17 @@ def set_cached(key: str, value: object, ttl_seconds: float) -> None:
 
 
 def invalidate(key: str) -> None:
+    """Drop ``key`` and discard any in-flight loader's pending write for it,
+    so a load started before invalidation can never repopulate a stale value."""
     _CACHE.pop(key, None)
+    _GENERATIONS[key] = _GENERATIONS.get(key, 0) + 1
 
 
 def clear() -> None:
+    global _EPOCH
     _CACHE.clear()
+    _EPOCH += 1
+    _GENERATIONS.clear()
     _LOCKS.clear()
     for task in _REFRESH_TASKS.values():
         task.cancel()

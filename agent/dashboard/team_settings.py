@@ -12,6 +12,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from fastapi import HTTPException
 from langgraph_sdk import get_client
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -60,6 +61,7 @@ class TeamSettingsUpdate(BaseModel):
     default_grouping_reasoning_effort: str | None = None
     default_chat_model: str | None = None
     default_chat_reasoning_effort: str | None = None
+    updated_at: str | None = None
 
     @field_validator("org_guidelines", mode="before")
     @classmethod
@@ -96,6 +98,10 @@ class TeamSettingsUpdate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_model_pairs(self) -> TeamSettingsUpdate:
+        # The self-assignments below mark fields as set; snapshot the
+        # caller-provided set and restore it so upsert_team_settings can merge
+        # with exclude_unset and preserve fields the caller never sent.
+        provided_fields = set(self.model_fields_set)
         self.default_agent_model, self.default_agent_reasoning_effort = _normalize_stale_model_pair(
             self.default_agent_model,
             self.default_agent_reasoning_effort,
@@ -129,6 +135,13 @@ class TeamSettingsUpdate(BaseModel):
             self.default_chat_model,
             self.default_chat_reasoning_effort,
         )
+        for model_field, effort_field in _MODEL_PAIR_FIELDS:
+            if (
+                model_field in provided_fields
+                and effort_field not in provided_fields
+                and getattr(self, effort_field) is not None
+            ):
+                provided_fields.add(effort_field)
         _validate_model_effort_pair(
             self.default_agent_model, self.default_agent_reasoning_effort, "agent"
         )
@@ -158,14 +171,7 @@ class TeamSettingsUpdate(BaseModel):
             # than reject a payload that still carries a Fable default, swap each
             # Fable default to its safe non-Fable fallback (mirrors the runtime
             # gate_fable_model guard) so the stored record can't advertise Fable.
-            for model_field, effort_field in (
-                ("default_agent_model", "default_agent_reasoning_effort"),
-                ("default_agent_subagent_model", "default_agent_subagent_reasoning_effort"),
-                ("default_reviewer_model", "default_reviewer_reasoning_effort"),
-                ("default_reviewer_subagent_model", "default_reviewer_subagent_reasoning_effort"),
-                ("default_grouping_model", "default_grouping_reasoning_effort"),
-                ("default_chat_model", "default_chat_reasoning_effort"),
-            ):
+            for model_field, effort_field in _MODEL_PAIR_FIELDS:
                 model = getattr(self, model_field)
                 if model in FABLE_MODEL_IDS:
                     new_model, new_effort = gate_fable_model(
@@ -173,7 +179,18 @@ class TeamSettingsUpdate(BaseModel):
                     )
                     setattr(self, model_field, new_model)
                     setattr(self, effort_field, new_effort)
+        self.__pydantic_fields_set__ = provided_fields
         return self
+
+
+_MODEL_PAIR_FIELDS: tuple[tuple[str, str], ...] = (
+    ("default_agent_model", "default_agent_reasoning_effort"),
+    ("default_agent_subagent_model", "default_agent_subagent_reasoning_effort"),
+    ("default_reviewer_model", "default_reviewer_reasoning_effort"),
+    ("default_reviewer_subagent_model", "default_reviewer_subagent_reasoning_effort"),
+    ("default_grouping_model", "default_grouping_reasoning_effort"),
+    ("default_chat_model", "default_chat_reasoning_effort"),
+)
 
 
 def _validate_model_effort_pair(model: str | None, effort: str | None, role: str) -> None:
@@ -196,16 +213,6 @@ def _normalize_stale_model_pair(
     if canonical is not None:
         return canonical
     return model, effort
-
-
-_MODEL_PAIR_FIELDS: tuple[tuple[str, str], ...] = (
-    ("default_agent_model", "default_agent_reasoning_effort"),
-    ("default_agent_subagent_model", "default_agent_subagent_reasoning_effort"),
-    ("default_reviewer_model", "default_reviewer_reasoning_effort"),
-    ("default_reviewer_subagent_model", "default_reviewer_subagent_reasoning_effort"),
-    ("default_grouping_model", "default_grouping_reasoning_effort"),
-    ("default_chat_model", "default_chat_reasoning_effort"),
-)
 
 
 def normalize_team_settings_for_response(settings: dict[str, Any]) -> dict[str, Any]:
@@ -270,22 +277,12 @@ def _default_settings() -> dict[str, Any]:
     }
 
 
-async def get_team_settings() -> dict[str, Any]:
-    defaults = _default_settings()
-    try:
-        item = await _client().store.get_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY)
-    except Exception as e:
-        logger.debug("team settings lookup failed: %s", e)
-        return defaults
-    if item is None:
-        return defaults
-    value = item.get("value") if isinstance(item, dict) else getattr(item, "value", None)
-    if not isinstance(value, dict):
-        return defaults
-    # Skip None-valued model fields so legacy records (or PUTs that cleared the
-    # selection) still surface the hardcoded default instead of a null.
+def _normalized_settings_view(value: dict[str, Any]) -> dict[str, Any]:
+    """Full response-shaped settings from one stored record: defaults filled in,
+    None-valued fields skipped (so legacy records or PUTs that cleared a
+    selection surface the hardcoded default), stale fields dropped."""
     overlay = {k: v for k, v in value.items() if v is not None}
-    merged = {**defaults, **overlay}
+    merged = {**_default_settings(), **overlay}
     for stale_field in (
         "trigger_mode",
         "autofix_mode",
@@ -297,32 +294,53 @@ async def get_team_settings() -> dict[str, Any]:
     return normalize_team_settings_for_response(merged)
 
 
+async def get_team_settings() -> dict[str, Any]:
+    try:
+        item = await _client().store.get_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY)
+    except Exception as e:
+        logger.debug("team settings lookup failed: %s", e)
+        return _default_settings()
+    if item is None:
+        return _default_settings()
+    value = item.get("value") if isinstance(item, dict) else getattr(item, "value", None)
+    if not isinstance(value, dict):
+        return _default_settings()
+    return _normalized_settings_view(value)
+
+
 async def upsert_team_settings(update: TeamSettingsUpdate) -> dict[str, Any]:
-    value: dict[str, Any] = {
-        "review_draft_prs": update.review_draft_prs,
-        "pr_summaries": update.pr_summaries,
-        "review_trace_links": update.review_trace_links,
-        "gateway_enabled": update.gateway_enabled,
-        "fable_enabled": update.fable_enabled,
-        "review_tracing_project": update.review_tracing_project,
-        "org_guidelines": update.org_guidelines,
-        "default_agent_model": update.default_agent_model,
-        "default_agent_reasoning_effort": update.default_agent_reasoning_effort,
-        "default_agent_subagent_model": update.default_agent_subagent_model,
-        "default_agent_subagent_reasoning_effort": update.default_agent_subagent_reasoning_effort,
-        "default_repo": update.default_repo,
-        "default_reviewer_model": update.default_reviewer_model,
-        "default_reviewer_reasoning_effort": update.default_reviewer_reasoning_effort,
-        "default_reviewer_subagent_model": update.default_reviewer_subagent_model,
-        "default_reviewer_subagent_reasoning_effort": update.default_reviewer_subagent_reasoning_effort,
-        "default_grouping_model": update.default_grouping_model,
-        "default_grouping_reasoning_effort": update.default_grouping_reasoning_effort,
-        "default_chat_model": update.default_chat_model,
-        "default_chat_reasoning_effort": update.default_chat_reasoning_effort,
-        "updated_at": datetime.now(UTC).isoformat(),
-    }
-    await _client().store.put_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY, value)
-    return value
+    # SPEEDBAY DEVIATION (OPE-134; see FORK.md): serializes this shared record with the
+    # host-only agent-default read/merge/write operation, and merges only the fields
+    # the caller explicitly set, so a partial update (or a client whose snapshot
+    # predates another writer) cannot null out concurrently written settings such
+    # as the host-committed agent model defaults.
+    from ..speedbay.model_settings import team_settings_commit_lock
+
+    async with team_settings_commit_lock:
+        store = _client().store
+        item = await store.get_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY)
+        existing = item.get("value") if isinstance(item, dict) else getattr(item, "value", None)
+        value: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        if "updated_at" in update.model_fields_set and update.updated_at != value.get("updated_at"):
+            raise HTTPException(409, "team settings changed; reload and retry")
+        value.update(update.model_dump(exclude_unset=True, exclude={"updated_at"}))
+        if value.get("fable_enabled") is not True:
+            # ZDR kill switch over the *merged* record: a partial update such as
+            # {"fable_enabled": false} must also convert previously stored Fable
+            # defaults, which the validator (update fields only) cannot see.
+            for model_field, effort_field in _MODEL_PAIR_FIELDS:
+                model = value.get(model_field)
+                if model in FABLE_MODEL_IDS:
+                    new_model, new_effort = gate_fable_model(
+                        model, value.get(effort_field), fable_enabled=False
+                    )
+                    value[model_field] = new_model
+                    value[effort_field] = new_effort
+        value["updated_at"] = datetime.now(UTC).isoformat()
+        await store.put_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY, value)
+    # The committed value itself, response-shaped: no re-read, so a transient
+    # store read failure cannot mask the successful write behind defaults.
+    return _normalized_settings_view(value)
 
 
 async def get_team_default_repo() -> dict[str, str] | None:
