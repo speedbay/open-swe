@@ -266,6 +266,27 @@ async def decide_gate_approval(
         return record
 
 
+async def restore_gate_approval_pending(
+    thread_id: str, fingerprint: str, *, decided_at: str
+) -> bool:
+    """Restore the exact approved decision after follow-up dispatch fails."""
+    async with _thread_locks[thread_id]:
+        approvals = await get_gate_approvals(thread_id)
+        record = approvals.get(fingerprint)
+        if (
+            not record
+            or record.get("status") != GATE_APPROVAL_APPROVED
+            or record.get("decided_at") != decided_at
+        ):
+            return False
+        record["status"] = GATE_APPROVAL_PENDING
+        record.pop("decided_at", None)
+        record.pop("decided_by", None)
+        approvals[fingerprint] = record
+        await _save_approvals(thread_id, approvals)
+        return True
+
+
 async def consume_gate_approval(thread_id: str, fingerprint: str) -> bool:
     """Atomically spend an approved exemption — passes exactly once.
 
@@ -349,7 +370,20 @@ async def list_pending_gate_approvals() -> list[dict[str, Any]]:
 
 async def _save_approvals(thread_id: str, approvals: dict[str, dict[str, Any]]) -> None:
     ordered = sorted(approvals.values(), key=lambda r: str(r.get("requested_at", "")))
-    trimmed = ordered[-_MAX_APPROVAL_RECORDS:]
+    protected_statuses = {
+        GATE_APPROVAL_PENDING,
+        GATE_APPROVAL_APPROVED,
+        GATE_APPROVAL_REJECTED,
+    }
+    protected = [record for record in ordered if record.get("status") in protected_statuses]
+    if len(protected) > _MAX_APPROVAL_RECORDS:
+        raise RuntimeError(
+            f"gate approval retention exceeded {_MAX_APPROVAL_RECORDS} protected records "
+            f"for thread {thread_id}"
+        )
+    consumed = [record for record in ordered if record.get("status") == GATE_APPROVAL_CONSUMED]
+    remaining = _MAX_APPROVAL_RECORDS - len(protected)
+    trimmed = [*protected, *(consumed[-remaining:] if remaining else [])]
     await get_client().threads.update(
         thread_id=thread_id,
         metadata={GATE_APPROVALS_KEY: {str(r["fingerprint"]): r for r in trimmed}},
