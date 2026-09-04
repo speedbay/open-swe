@@ -244,9 +244,12 @@ without a subscription branch falls back to the unchanged API-key path with
 one warning in `/tmp/openswe-backend.log`. Enabled OpenAI/Anthropic
 subscription auth is **fail-closed** (OPE-175): missing or unusable
 subscription credentials make model construction raise a redacted error
-instead of silently billing a metered API key. Server graph factories may
-surface that error as a `DeferredErrorModel` that fails on first model call;
-either way no metered request is made. Recovery: `login_chatgpt_device()`
+instead of silently billing a metered API key. Inside a running event loop
+(async graph factories) the blocking credential-store probe is skipped, so
+an unusable store fails on the first model call instead — through the OAuth
+model itself. Server graph factories may also surface a construction error
+as a `DeferredErrorModel` that fails on first model call; either way no
+metered request is made. Recovery: `login_chatgpt_device()`
 (OpenAI) or run `claude` once on this machine (Anthropic), or unset the
 toggle.
 

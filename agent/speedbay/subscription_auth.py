@@ -35,6 +35,7 @@ OPE-60).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -67,6 +68,15 @@ def _chatgpt_store_path() -> Path:
     return DEFAULT_STORE_PATH
 
 
+def _in_running_loop() -> bool:
+    """Whether an asyncio event loop is running in this thread."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def _reject_explicit_api_key(provider: str, model_kwargs: dict[str, object], *keys: str) -> None:
     """Raise when a caller-supplied API key would bypass subscription OAuth.
 
@@ -87,8 +97,9 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
     """Build a ``_ChatOpenAICodex`` for ``model_name``; fail closed otherwise.
 
     Raises on an explicit caller API key (see :func:`_reject_explicit_api_key`)
-    and on a missing token store (OPE-175): falling through would construct a
-    metered API-key model. Drops the kwargs ``_ChatOpenAICodex`` forces or pins (it raises on
+    and on a missing or, in loop-free contexts, unusable token store (OPE-175):
+    falling through would construct a metered API-key model. Drops the kwargs
+    ``_ChatOpenAICodex`` forces or pins (it raises on
     conflicting values) and replicates the two stateless-responses kwargs
     ``make_model`` would otherwise apply after this branch returns
     (``output_version`` and encrypted-reasoning ``include``).
@@ -105,6 +116,24 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
 
     from langchain_openai.chat_models.codex import _ChatOpenAICodex
     from langchain_openai.chatgpt_oauth import _FileChatGPTOAuthTokenProvider
+
+    token_provider = _FileChatGPTOAuthTokenProvider(path=store_path)
+    if not _in_running_loop():
+        # Probe only when no event loop is running (same gate and rationale as
+        # _anthropic_model: the store read is blocking I/O). In-loop
+        # construction is optimistic; an unusable store then fails per request
+        # through the OAuth model itself — never through metered API-key auth.
+        try:
+            token_provider._read_from_disk()
+        except Exception as exc:
+            # Redacted: exception type only, never store contents (OPE-175).
+            raise RuntimeError(
+                f"Subscription auth ({ENV_TOGGLE}) is enabled but the ChatGPT OAuth "
+                f"token store at {store_path} is unusable ({type(exc).__name__}); "
+                "refusing to fall back to metered OpenAI API-key auth. Repair or "
+                "delete it and re-run login_chatgpt_device() (see OPERATIONS.md "
+                f"§ Subscription OAuth), or unset {ENV_TOGGLE}."
+            ) from exc
 
     kwargs: dict[str, Any] = dict(model_kwargs)
     # max_tokens: the codex backend rejects the mapped max_output_tokens field
@@ -128,7 +157,7 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
         kwargs["include"] = [*include, "reasoning.encrypted_content"]
     return _ChatOpenAICodex(
         model=model_name,
-        token_provider=_FileChatGPTOAuthTokenProvider(path=store_path),
+        token_provider=token_provider,
         **kwargs,
     )
 
@@ -142,18 +171,10 @@ def _anthropic_model(model_name: str, model_kwargs: dict[str, object]) -> Any | 
     """
     _reject_explicit_api_key("Anthropic", model_kwargs, "api_key", "anthropic_api_key")
 
-    import asyncio
-
     from .claude_code_model import ChatClaudeCode, ClaudeCodeTokenProvider
 
     provider = ClaudeCodeTokenProvider()
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        in_loop = False
-    else:
-        in_loop = True
-    if not in_loop:
+    if not _in_running_loop():
         # Probe only when no event loop is running: the `security` subprocess
         # is a blocking os.read, and langgraph dev's blocking-call detector
         # raises on it inside async graph factories — which this except would

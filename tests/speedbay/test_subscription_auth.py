@@ -47,9 +47,17 @@ def _isolate(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def chatgpt_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Point the ChatGPT token-store seam at an existing temp file."""
+    """Point the ChatGPT token-store seam at an existing, parseable temp store."""
     store = tmp_path / "chatgpt-auth.json"
-    store.write_text("{}")
+    store.write_text(
+        json.dumps(
+            {
+                "access_token": "chatgpt-access-sentinel",
+                "refresh_token": "chatgpt-refresh-sentinel",
+                "expires_at": "2099-01-01T00:00:00+00:00",
+            }
+        )
+    )
     monkeypatch.setattr(subscription_auth, "_chatgpt_store_path", lambda: store)
     return store
 
@@ -255,6 +263,27 @@ class TestFailClosedCredentials:
             make_model(_OPENAI_ID, max_tokens=1)
         assert captured_init == {}  # init_chat_model never called
         assert "sk-env-openai-sentinel" not in str(excinfo.value)
+        assert "login_chatgpt_device" in str(excinfo.value)
+
+    @pytest.mark.parametrize("store_content", ["", '{"access_token": "chatgpt-access-sentinel"}'])
+    def test_unusable_openai_store_never_reaches_api_key_model(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        captured_init: dict[str, Any],
+        store_content: str,
+    ) -> None:
+        """An existing empty or schema-incomplete store fails at construction."""
+        store = tmp_path / "chatgpt-auth.json"
+        store.write_text(store_content)
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env-openai-sentinel")
+        monkeypatch.setattr(subscription_auth, "_chatgpt_store_path", lambda: store)
+        with pytest.raises(RuntimeError, match="unusable") as excinfo:
+            make_model(_OPENAI_ID, max_tokens=1)
+        assert captured_init == {}  # init_chat_model never called
+        for secret in ("sk-env-openai-sentinel", "chatgpt-access-sentinel"):
+            assert secret not in str(excinfo.value)
         assert "login_chatgpt_device" in str(excinfo.value)
 
     @pytest.mark.parametrize("store_state", ["missing", "incomplete"])
@@ -642,3 +671,15 @@ class TestAnthropicBranch:
         monkeypatch.setattr(claude_code_model, "ClaudeCodeTokenProvider", _MustNotProbe)
         model = subscription_model("anthropic:claude-opus-5", {})
         assert isinstance(model, ChatClaudeCode)
+
+    async def test_in_loop_openai_construction_skips_the_blocking_probe(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Same in-loop optimism for the OpenAI store probe: unusable content
+        must not block construction inside a running event loop."""
+        store = tmp_path / "chatgpt-auth.json"
+        store.write_text("")  # unusable off-loop; must be ignored in-loop
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setattr(subscription_auth, "_chatgpt_store_path", lambda: store)
+        model = subscription_model(_OPENAI_ID, {})
+        assert model is not None
