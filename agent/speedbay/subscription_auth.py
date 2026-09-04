@@ -6,13 +6,15 @@ with upstream source is one marked block at the top of ``make_model`` in
 
 When ``SPEEDBAY_SUBSCRIPTION_AUTH`` is truthy, :func:`subscription_model`
 builds chat models that authenticate with the team's ChatGPT subscription
-OAuth tokens instead of metered API keys. On any problem — toggle off,
-provider without a subscription branch, credentials unreadable — it returns
-``None`` with a warn-once log and callers fall through to the unchanged
-API-key path (``init_chat_model``), mirroring the fail-open contract of
-:func:`agent.utils.gateway.gateway_overrides`. The one hard failure: an
-explicit caller API key for a subscription provider raises, because it would
-silently bypass subscription OAuth (OPE-144 review decision).
+OAuth tokens instead of metered API keys. Only a toggle that is off or a
+provider without a subscription branch returns ``None`` (fall through to the
+unchanged API-key path, ``init_chat_model``). For supported providers the
+contract is fail-closed (OPE-175): a missing or unusable credential store
+raises a redacted ``RuntimeError`` instead of silently selecting metered
+API-key auth, and an explicit caller API key raises because it would bypass
+subscription OAuth (OPE-144 review decision). Server graph factories may
+represent the construction error as a ``DeferredErrorModel`` until first
+invocation; that still never authenticates with a metered key.
 
 The OpenAI branch is configuration only: langchain-openai ships
 ``_ChatOpenAICodex`` (ChatGPT codex backend, forced ``store=False`` /
@@ -82,10 +84,11 @@ def _reject_explicit_api_key(provider: str, model_kwargs: dict[str, object], *ke
 
 
 def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | None:
-    """Build a ``_ChatOpenAICodex`` for ``model_name``, or ``None`` to fall through.
+    """Build a ``_ChatOpenAICodex`` for ``model_name``; fail closed otherwise.
 
-    Raises on an explicit caller API key (see :func:`_reject_explicit_api_key`).
-    Drops the kwargs ``_ChatOpenAICodex`` forces or pins (it raises on
+    Raises on an explicit caller API key (see :func:`_reject_explicit_api_key`)
+    and on a missing token store (OPE-175): falling through would construct a
+    metered API-key model. Drops the kwargs ``_ChatOpenAICodex`` forces or pins (it raises on
     conflicting values) and replicates the two stateless-responses kwargs
     ``make_model`` would otherwise apply after this branch returns
     (``output_version`` and encrypted-reasoning ``include``).
@@ -93,14 +96,12 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
     _reject_explicit_api_key("OpenAI", model_kwargs, "api_key", "openai_api_key")
     store_path = _chatgpt_store_path()
     if not store_path.is_file():
-        _warn_once(
-            "openai-credentials",
-            "Subscription auth enabled but no ChatGPT OAuth token store at %s; "
-            "falling back to API-key auth. One-time setup: login_chatgpt_device() "
-            "(see OPERATIONS.md).",
-            store_path,
+        raise RuntimeError(
+            f"Subscription auth ({ENV_TOGGLE}) is enabled but no ChatGPT OAuth token "
+            f"store exists at {store_path}; refusing to fall back to metered OpenAI "
+            "API-key auth. One-time setup: login_chatgpt_device() (see OPERATIONS.md "
+            f"§ Subscription OAuth), or unset {ENV_TOGGLE}."
         )
-        return None
 
     from langchain_openai.chat_models.codex import _ChatOpenAICodex
     from langchain_openai.chatgpt_oauth import _FileChatGPTOAuthTokenProvider
@@ -133,12 +134,11 @@ def _openai_model(model_name: str, model_kwargs: dict[str, object]) -> Any | Non
 
 
 def _anthropic_model(model_name: str, model_kwargs: dict[str, object]) -> Any | None:
-    """Build a ``ChatClaudeCode`` for ``model_name``, or ``None`` to fall through.
+    """Build a ``ChatClaudeCode`` for ``model_name``; fail closed otherwise.
 
-    Raises on an explicit caller API key (see :func:`_reject_explicit_api_key`).
-    The credential store is probed up front so an unauthenticated machine
-    falls back to API-key auth at construction time instead of failing every
-    model call at request time.
+    Raises on an explicit caller API key (see :func:`_reject_explicit_api_key`)
+    and, in loop-free contexts, on an unreadable or incomplete credential
+    store (OPE-175): falling through would construct a metered API-key model.
     """
     _reject_explicit_api_key("Anthropic", model_kwargs, "api_key", "anthropic_api_key")
 
@@ -159,23 +159,22 @@ def _anthropic_model(model_name: str, model_kwargs: dict[str, object]) -> Any | 
         # raises on it inside async graph factories — which this except would
         # misread as "store unreadable" (observed live 2026-08-02, OPE-67).
         # ponytail: in-loop construction is optimistic; genuinely missing
-        # credentials then fail per request (aget_token runs off-loop) and the
-        # model-fallback middleware absorbs them, instead of the API-key
-        # fallback this probe provides in loop-free contexts.
+        # credentials then fail per request (aget_token runs off-loop) through
+        # the OAuth model itself — never through metered API-key auth.
         try:
             creds, _ = provider.read()
             missing = {"accessToken", "refreshToken"} - creds.keys()
             if missing:
                 raise KeyError(f"credential store missing {sorted(missing)}")
         except Exception as exc:
-            _warn_once(
-                "anthropic-credentials",
-                "Subscription auth enabled but the Claude Code credential store is "
-                "unreadable (%s); falling back to API-key auth. One-time setup: run "
-                "`claude` on this machine.",
-                exc,
-            )
-            return None
+            # Redacted: exception type only, never store contents (OPE-175).
+            raise RuntimeError(
+                f"Subscription auth ({ENV_TOGGLE}) is enabled but the Claude Code "
+                f"credential store is unusable ({type(exc).__name__}); refusing to "
+                "fall back to metered Anthropic API-key auth. One-time setup: run "
+                "`claude` on this machine (see OPERATIONS.md § Subscription OAuth), "
+                f"or unset {ENV_TOGGLE}."
+            ) from exc
     # pydantic synthesizes __init__ from field aliases (model_name), but
     # populate_by_name accepts the canonical names at runtime — the same call
     # shape init_chat_model uses.
@@ -189,11 +188,12 @@ def _anthropic_model(model_name: str, model_kwargs: dict[str, object]) -> Any | 
 def subscription_model(model_id: str, model_kwargs: dict[str, object]) -> Any | None:
     """Return a subscription-OAuth chat model for ``model_id``, or ``None``.
 
-    ``None`` means "no subscription route": the caller (``make_model``) falls
-    through to the API-key ``init_chat_model`` path unchanged. Never raises
-    for a missing or unreadable credential store — fail-open, log-don't-raise.
-    The one exception: an explicit caller API key for a subscription provider
-    raises instead of bypassing OAuth (:func:`_reject_explicit_api_key`).
+    ``None`` means "no subscription route" — the toggle is off or the provider
+    has no subscription branch — and the caller (``make_model``) falls through
+    to the API-key ``init_chat_model`` path unchanged. Supported providers are
+    fail-closed (OPE-175): a missing or unusable credential store raises a
+    redacted ``RuntimeError``, and an explicit caller API key raises instead
+    of bypassing OAuth (:func:`_reject_explicit_api_key`).
     """
     if not subscription_auth_enabled():
         return None

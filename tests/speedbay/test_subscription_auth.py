@@ -237,27 +237,53 @@ class TestOpenAIBranch:
         assert explicit.reasoning == {"effort": "high"}
 
 
-class TestFailOpenFallthrough:
-    """AC: missing store or unsupported provider falls through with one warning."""
+class TestFailClosedCredentials:
+    """AC: enabled subscription auth with unusable credentials never bills a key."""
 
-    def test_missing_store_falls_through_to_api_key_path(
+    def test_missing_openai_store_never_reaches_api_key_model(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         captured_init: dict[str, Any],
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env-openai-sentinel")
         monkeypatch.setattr(
             subscription_auth, "_chatgpt_store_path", lambda: tmp_path / "missing.json"
         )
-        with caplog.at_level(logging.WARNING, logger=subscription_auth.__name__):
+        with pytest.raises(RuntimeError, match="refusing to fall back") as excinfo:
             make_model(_OPENAI_ID, max_tokens=1)
-            model_module._MODEL_CACHE.clear()
-            make_model(_OPENAI_ID, max_tokens=2)
-        assert captured_init["kwargs"]["max_tokens"] == 2
-        warnings = [r for r in caplog.records if "no ChatGPT OAuth token store" in r.message]
-        assert len(warnings) == 1
+        assert captured_init == {}  # init_chat_model never called
+        assert "sk-env-openai-sentinel" not in str(excinfo.value)
+        assert "login_chatgpt_device" in str(excinfo.value)
+
+    @pytest.mark.parametrize("store_state", ["missing", "incomplete"])
+    def test_unusable_anthropic_store_never_reaches_api_key_model(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        captured_init: dict[str, Any],
+        store_state: str,
+    ) -> None:
+        store = tmp_path / "credentials.json"
+        if store_state == "incomplete":
+            # Parseable store missing refreshToken; its one value is a sentinel
+            # that must never surface in the redacted diagnostic.
+            store.write_text(json.dumps({"claudeAiOauth": {"accessToken": "access-old"}}))
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env-sentinel")
+        monkeypatch.setattr(claude_code_model, "_default_credentials_path", lambda: store)
+        monkeypatch.setattr(claude_code_model, "_default_use_keychain", lambda: False)
+        with pytest.raises(RuntimeError, match="refusing to fall back") as excinfo:
+            make_model("anthropic:claude-opus-5", max_tokens=64)
+        assert captured_init == {}  # init_chat_model never called
+        for secret in ("sk-ant-env-sentinel", "access-old"):
+            assert secret not in str(excinfo.value)
+        assert "`claude`" in str(excinfo.value)
+
+
+class TestFailOpenFallthrough:
+    """AC: an unsupported provider still falls through with one warning."""
 
     def test_provider_without_branch_returns_none_with_one_warning(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -557,7 +583,7 @@ class TestChatClaudeCode:
 
 
 class TestAnthropicBranch:
-    """AC: make_model routes anthropic ids through ChatClaudeCode, fail-open."""
+    """AC: make_model routes anthropic ids through ChatClaudeCode."""
 
     def test_make_model_returns_chat_claude_code(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -598,24 +624,6 @@ class TestAnthropicBranch:
         model = make_model("anthropic:claude-opus-5", max_tokens=64)
         assert isinstance(model, ChatClaudeCode)
 
-    def test_unreadable_store_falls_through_to_api_key_path(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        captured_init: dict[str, Any],
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        monkeypatch.setenv(ENV_TOGGLE, "1")
-        monkeypatch.setattr(
-            claude_code_model, "_default_credentials_path", lambda: tmp_path / "missing.json"
-        )
-        monkeypatch.setattr(claude_code_model, "_default_use_keychain", lambda: False)
-        with caplog.at_level(logging.WARNING, logger=subscription_auth.__name__):
-            make_model("anthropic:claude-opus-5", max_tokens=64)
-        assert captured_init["model"] == "anthropic:claude-opus-5"
-        warnings = [r for r in caplog.records if "Claude Code credential store" in r.message]
-        assert len(warnings) == 1
-
     async def test_in_loop_construction_skips_the_blocking_probe(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -634,18 +642,3 @@ class TestAnthropicBranch:
         monkeypatch.setattr(claude_code_model, "ClaudeCodeTokenProvider", _MustNotProbe)
         model = subscription_model("anthropic:claude-opus-5", {})
         assert isinstance(model, ChatClaudeCode)
-
-    def test_empty_store_falls_through_to_api_key_path(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        captured_init: dict[str, Any],
-    ) -> None:
-        """A parseable store without the token fields must not construct a model."""
-        store = tmp_path / "credentials.json"
-        store.write_text(json.dumps({"claudeAiOauth": {}}))
-        monkeypatch.setenv(ENV_TOGGLE, "1")
-        monkeypatch.setattr(claude_code_model, "_default_credentials_path", lambda: store)
-        monkeypatch.setattr(claude_code_model, "_default_use_keychain", lambda: False)
-        make_model("anthropic:claude-opus-5", max_tokens=64)
-        assert captured_init["model"] == "anthropic:claude-opus-5"
