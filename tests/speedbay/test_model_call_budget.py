@@ -33,6 +33,7 @@ async def test_deadline_returns_when_handler_suppresses_cancellation() -> None:
     async def handler(_request: ModelRequest[None]) -> ModelResponse[Any]:
         try:
             await asyncio.Event().wait()
+            raise AssertionError("unreachable")
         except asyncio.CancelledError:
             suppressed.set()
             await release.wait()
@@ -66,6 +67,7 @@ async def test_late_orphan_exception_is_observed() -> None:
     async def handler(_request: ModelRequest[None]) -> ModelResponse[Any]:
         try:
             await asyncio.Event().wait()
+            raise AssertionError("unreachable")
         except asyncio.CancelledError:
             await release.wait()
             settled.set()
