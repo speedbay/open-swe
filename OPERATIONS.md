@@ -400,6 +400,18 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now openswe-backend.service openswe-tunnel.service openswe-dashboard.service openswe-prune.timer openswe-thread-retention.timer
 ```
 
+After pulling a change to the backend unit, apply it explicitly:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart openswe-backend.service
+```
+
+The backend cgroup starts throttling at 20 GiB and cannot exceed 24 GiB, so
+`Restart=always` recovers it after a cgroup OOM kill. On the 31 GiB host, these
+limits plus the 8 GiB swap buffer leave pressure headroom for up to three 4 GiB
+sandbox containers and the tunnel, dashboard, and host daemons.
+
 Use
 `systemctl status openswe-backend.service openswe-tunnel.service openswe-dashboard.service`
 for current state and

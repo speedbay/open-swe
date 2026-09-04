@@ -104,11 +104,31 @@ can use the daemon:
 sudo usermod -aG docker openswe
 ```
 
+Provision an 8 GiB swapfile as a pressure buffer and persist it across reboots:
+
+```bash
+if [ "$(stat -f -c %T /)" = btrfs ]; then
+    sudo touch /swapfile
+    sudo chattr +C /swapfile
+fi
+sudo fallocate -l 8G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
 **Verify:**
 
 ```bash
 sudo -u openswe docker info >/dev/null && git --version && uv --version && node -v
 pnpm --version && cloudflared --version && caddy version
+```
+
+Verify the swapfile separately:
+
+```bash
+swapon --show
 ```
 
 Install the read-only deploy key for the `openswe` account, replacing the source
