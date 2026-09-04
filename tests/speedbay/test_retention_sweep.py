@@ -97,7 +97,7 @@ async def test_sweep_deletes_exactly_old_idle_and_error_threads(caplog) -> None:
         {
             "limit": 100,
             "offset": 0,
-            "sort_by": "updated_at",
+            "sort_by": "created_at",
             "sort_order": "asc",
             "select": ["thread_id", "updated_at", "status"],
         }

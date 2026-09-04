@@ -89,7 +89,7 @@ async def sweep(
         page = await client.threads.search(
             limit=PAGE_SIZE,
             offset=offset,
-            sort_by="updated_at",
+            sort_by="created_at",
             sort_order="asc",
             select=["thread_id", "updated_at", "status"],
         )
