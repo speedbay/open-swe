@@ -127,6 +127,7 @@ Everything we add lives in files upstream does not own:
 | `speedbay/openswe` | **The lifecycle command**: `start` / `stop` / `status` — see § Operating |
 | `speedbay/set_model.py` | Reads/sets the agent's default model (no dashboard needed) |
 | `speedbay/create_linear_webhook.py` | Creates/lists the Linear trigger webhooks (needs a temp admin key) |
+| `speedbay/retention_sweep.py` | Deletes idle/error threads older than the retention window, except cron-owned threads |
 | `speedbay/docker/Dockerfile.sandbox` | The sandbox image (`openswe-sandbox:dev`) the docker backend boots |
 | `agent/speedbay/` | **All Speed Bay agent modules**: `config.py` (OPE-31 — the single home for tunable org-layer settings: sandbox image/TTL/memory/timeouts, gate workspace + timeouts, corrective-round bound, Linear endpoint; env-overridable knobs resolve at call time), `conventions.py` (commit/PR contract middleware), `linear_guard.py` (OPE-23 self-trigger guard), `docker_sandbox.py` (OPE-7 docker backend), `quality_gates.py` (OPE-9 pre-PR quality gates; commands ported from warehouse workflow.md — re-sync on change), `pr_standards.py` (OPE-8 atomicity-cap + commit-hygiene gate on `open_pull_request`, incl. shell-fallback interception; OPE-34 forces gate-passing PRs to open ready-for-review, never draft), `runtime_compat.py` (OPE-15 — strips langgraph-api's `__pregel_runtime` from factory-bound configs), `rules/` (OPE-14 atomicity-cap + commit-hygiene rules as pure functions; consumed by `pr_standards.py`) |
 | `tests/speedbay/` | **All Speed Bay tests** + fixtures: conventions, linear guard, docker sandbox (incl. the negative isolation proof; self-skips without a docker daemon/image/App key) |
@@ -357,10 +358,27 @@ images, networks, volumes, and build cache are out of scope. Enable it on the ho
 `sudo systemctl start openswe-prune.service`, and inspect results with
 `journalctl -u openswe-prune.service`.
 
+### Thread retention
+
+A daily systemd timer (`openswe-thread-retention.timer`) deletes `idle` and `error` threads
+whose last update is more than 10 days old. The scanner takes a bounded snapshot, then a
+loopback-only backend endpoint atomically rechecks status, age, and cron ownership before each
+delete, so it never deletes `busy`, `interrupted`, or cron-referenced threads. Set
+`OPENSWE_THREAD_RETENTION_DAYS` in `.env` to override the 10-day default. Enable it with
+`sudo systemctl enable --now openswe-thread-retention.timer`, check it with
+`systemctl status openswe-thread-retention.timer`, and run it manually with:
+
+```bash
+sudo systemctl start openswe-thread-retention.service
+```
+
+The per-run scanned/deleted/skipped summary is available through
+`journalctl -u openswe-thread-retention.service`; thread content and identifiers are not logged.
+
 ### On the Azure host (systemd)
 
 Install the deployment units as symlinks so a checkout update changes the source files in place,
-then enable and start all three processes and the prune timer:
+then enable and start all three processes and both maintenance timers:
 
 ```bash
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-backend.service /etc/systemd/system/openswe-backend.service
@@ -368,8 +386,10 @@ sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-tunnel.service /etc/
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-dashboard.service /etc/systemd/system/openswe-dashboard.service
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-prune.service /etc/systemd/system/openswe-prune.service
 sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-prune.timer /etc/systemd/system/openswe-prune.timer
+sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-thread-retention.service /etc/systemd/system/openswe-thread-retention.service
+sudo ln -sfn /home/openswe/open-swe/speedbay/deploy/openswe-thread-retention.timer /etc/systemd/system/openswe-thread-retention.timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now openswe-backend.service openswe-tunnel.service openswe-dashboard.service openswe-prune.timer
+sudo systemctl enable --now openswe-backend.service openswe-tunnel.service openswe-dashboard.service openswe-prune.timer openswe-thread-retention.timer
 ```
 
 Use

@@ -40,6 +40,7 @@ all survived, and re-add any a merge dropped (each is marked in-code with a
 | 10 | `GateApprovalCard` render site (OPE-10) | import + one JSX element in `AgentThreadView.tsx`; component and hooks are fork-added files |
 | 11 | `PendingGateApprovalsBanner` render site (OPE-10) | import + one JSX element in `AgentsHome.tsx`; component and hooks are fork-added files |
 | 12 | Wrapped `request_pr_review` tool registration (OPE-100) | direct import in `agent/server.py`; source gate lives in `agent/speedbay/review_request_gate.py` |
+| 13 | `retention_router` import + `include_router` (OPE-177) | `create_app()` in `agent/api/app.py`; the loopback-only conditional-delete endpoint lives in `agent/speedbay/retention_api.py` |
 
 OPE-100 deliberately gates review requests by run source rather than comparing the PR
 head with the run's working branch: the Slack/GitHub allowlist covers every current
@@ -87,6 +88,7 @@ The upstream-owned files below carry edits. Each is marked in-code with
 
 | File | Edit | Why not elsewhere |
 |---|---|---|
+| `agent/api/app.py` | Imports and mounts `retention_router` (OPE-177) | The custom FastAPI composition is the only sanctioned registration point for the org-owned, loopback-only conditional-delete endpoint; the runtime SDK has no conditional thread delete. |
 | `agent/server.py` | Imports + three entries in the `get_agent()` middleware list (`SpeedbayConventionsMiddleware`, `PRStandardsMiddleware`, `QualityGatesMiddleware`), plus the wrapped `request_pr_review` tool import (OPE-100), plus `pull.rebase true` in `_configure_git_identity` (OPE-109), plus the `ModelCallTimeoutMiddleware` ordering before fallback (OPE-125), plus notification-failure containment in `PrepareAgentRunMiddleware._prepare` (OPE-132) | Sanctioned registration point; no alternative seam. The rebase default rides the only sandbox-global git-config call, so branch syncs never create merge commits that linear-history rulesets reject. The timeout must wrap fallback to enforce one total model-call/fallback wall-clock budget. The OPE-132 guard belongs at this exception-preservation boundary: no sanctioned seam exists, and moving it into the shared helper would alter already-contained callers; re-check both run-setup guards after upstream merges. |
 | `agent/reviewer.py` | Notification-failure containment in `PrepareReviewerRunMiddleware._prepare` (OPE-132) | This is the only reviewer exception-preservation boundary and exposes no sanctioned seam. The minimal local guard preserves reviewer replacement semantics without changing shared-helper callers; re-check both run-setup guards after upstream merges. |
 | `docs/INSTALLATION.md` | Marked canonical LangGraph graph inventory (OPE-136) | Direct operator-guide correction is cheaper than indirection; `tests/speedbay/test_operator_documentation.py` derives its recurring merge check from `langgraph.json`. |

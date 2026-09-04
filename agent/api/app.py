@@ -14,6 +14,7 @@ from ..dashboard.workflow_approval_api import workflow_approval_router
 # SPEEDBAY REGISTRATION (see FORK.md): mounts the org-layer gate-breach
 # approval API (agent/speedbay/gate_approval_api.py, OPE-10).
 from ..speedbay.gate_approval_api import gate_approval_router
+from ..speedbay.retention_api import retention_router  # SPEEDBAY REGISTRATION (OPE-177)
 from ..webhooks.github_routes import router as github_webhook_router
 from ..webhooks.linear_routes import router as linear_webhook_router
 from ..webhooks.slack_routes import router as slack_webhook_router
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
         )
     app.include_router(dashboard_router)
     app.include_router(gate_approval_router)  # SPEEDBAY REGISTRATION (OPE-10)
+    app.include_router(retention_router)  # SPEEDBAY REGISTRATION (OPE-177)
     app.include_router(plan_router)
     app.include_router(workflow_approval_router)
     app.include_router(linear_webhook_router)
