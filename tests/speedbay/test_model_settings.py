@@ -127,6 +127,28 @@ async def test_commit_rejects_disabled_fable_without_write(fake_store: FakeStore
     assert fake_store.writes == []
 
 
+async def test_invalidate_discards_in_flight_stale_load() -> None:
+    """A cache load started before invalidate() must not repopulate the key,
+    so the commit's post-write verification read always loads fresh state."""
+    ttl_cache.clear()
+    release = asyncio.Event()
+
+    async def stale_loader() -> str:
+        await release.wait()
+        return "stale"
+
+    in_flight = asyncio.create_task(ttl_cache.cached("k", 60, stale_loader))
+    await asyncio.sleep(0)  # loader is now awaiting release
+    ttl_cache.invalidate("k")
+    release.set()
+    assert await in_flight == "stale"
+
+    async def fresh_loader() -> str:
+        return "fresh"
+
+    assert await ttl_cache.cached("k", 60, fresh_loader) == "fresh"
+
+
 async def test_commit_replaces_warmed_effective_runtime_pair(fake_store: FakeStore) -> None:
     from agent import server
 

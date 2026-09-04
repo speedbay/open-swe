@@ -99,10 +99,10 @@ async def commit_agent_default_model(update: AgentDefaultModelUpdate) -> AgentDe
             raise HTTPException(
                 500, "stored agent defaults did not resolve to the requested model pair"
             )
-        return AgentDefaultModelResponse(
-            main=EffectiveModelPair(model_id=main[0], effort=main[1]),
-            subagent=EffectiveModelPair(model_id=subagent[0], effort=subagent[1]),
-        )
+        # main == subagent == requested was verified above, so the typed
+        # update fields are the effective pair.
+        pair = EffectiveModelPair(model_id=update.model_id, effort=update.effort)
+        return AgentDefaultModelResponse(main=pair, subagent=pair)
 
 
 @model_settings_router.put("/agent-default", response_model=AgentDefaultModelResponse)
