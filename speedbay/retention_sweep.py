@@ -60,6 +60,15 @@ async def _cron_thread_ids(client: Any) -> set[str]:
         offset += len(page)
 
 
+def _is_deletable(thread: dict[str, Any], cutoff: datetime) -> bool:
+    updated_at = _timestamp(thread.get("updated_at"))
+    return (
+        thread.get("status") in DELETABLE_STATUSES
+        and updated_at is not None
+        and updated_at < cutoff
+    )
+
+
 async def sweep(
     client: Any, *, now: datetime | None = None, days: int | None = None
 ) -> dict[str, Any]:
@@ -67,7 +76,10 @@ async def sweep(
     current_time = now or datetime.now(UTC)
     if current_time.tzinfo is None:
         current_time = current_time.replace(tzinfo=UTC)
-    cutoff = current_time.astimezone(UTC) - timedelta(days=days or retention_days())
+    retention = retention_days() if days is None else days
+    if retention <= 0:
+        raise ValueError("retention days must be a positive integer")
+    cutoff = current_time.astimezone(UTC) - timedelta(days=retention)
     cron_thread_ids = await _cron_thread_ids(client)
     candidates: list[str] = []
     scanned = 0
@@ -84,14 +96,10 @@ async def sweep(
         scanned += len(page)
         for thread in page:
             thread_id = thread.get("thread_id")
-            updated_at = _timestamp(thread.get("updated_at"))
-            status = thread.get("status")
             if (
                 isinstance(thread_id, str)
                 and thread_id
-                and status in DELETABLE_STATUSES
-                and updated_at is not None
-                and updated_at < cutoff
+                and _is_deletable(thread, cutoff)
                 and thread_id not in cron_thread_ids
             ):
                 candidates.append(thread_id)
@@ -99,13 +107,20 @@ async def sweep(
             break
         offset += len(page)
 
+    deleted = 0
     for thread_id in candidates:
+        if await client.crons.search(thread_id=thread_id, limit=1):
+            continue
+        thread = await client.threads.get(thread_id)
+        if not _is_deletable(thread, cutoff):
+            continue
         await client.threads.delete(thread_id)
+        deleted += 1
 
     summary = {
         "scanned": scanned,
-        "deleted": len(candidates),
-        "skipped": scanned - len(candidates),
+        "deleted": deleted,
+        "skipped": scanned - deleted,
         "cutoff": cutoff,
     }
     logger.info(
@@ -119,7 +134,10 @@ async def sweep(
 
 
 async def main() -> None:
-    await sweep(get_client(url="http://127.0.0.1:2024"))
+    url = os.environ.get("LANGGRAPH_URL") or os.environ.get(
+        "LANGGRAPH_URL_PROD", "http://127.0.0.1:2024"
+    )
+    await sweep(get_client(url=url))
 
 
 if __name__ == "__main__":

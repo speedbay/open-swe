@@ -9,5 +9,7 @@ User=openswe
 WorkingDirectory=/home/openswe/open-swe
 EnvironmentFile=-/home/openswe/open-swe/.env
 ExecStart=/home/openswe/open-swe/.venv/bin/python /home/openswe/open-swe/speedbay/retention_sweep.py
+Restart=on-failure
+RestartSec=30
 StandardOutput=journal
 StandardError=journal
