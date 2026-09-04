@@ -141,7 +141,7 @@ async def _process_transition_delivery(issue_data: dict[str, Any]) -> bool:
     issue_id = issue_data.get("id")
     updated_at = issue_data.get("updatedAt")
     watermark = _parse_updated_at(updated_at)
-    if not isinstance(issue_id, str) or watermark is None:
+    if not isinstance(issue_id, str) or not isinstance(updated_at, str) or watermark is None:
         return await process_verify_dispatch(issue_data)
 
     identity = (issue_id, updated_at)
@@ -158,6 +158,9 @@ async def _process_transition_delivery(issue_data: dict[str, Any]) -> bool:
         return False
     else:
         tracked = _admit_transition(issue_id, updated_at, watermark)
+
+    if not tracked:
+        return False
 
     try:
         dispatched = await process_verify_dispatch(issue_data)

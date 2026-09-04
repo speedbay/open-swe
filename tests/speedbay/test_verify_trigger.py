@@ -193,6 +193,24 @@ async def test_concurrent_duplicate_dispatches_once():
         assert await first is True
 
 
+async def test_full_pending_transition_map_drops_untracked_delivery():
+    issue = _fixture_issue()
+    watermark = verify_trigger._parse_updated_at(issue["updatedAt"])
+    assert watermark is not None
+    verify_trigger._transition_records.clear()
+    for index in range(verify_trigger._SEEN_MAX):
+        issue_id = f"pending-{index}"
+        verify_trigger._transition_records[issue_id] = verify_trigger._TransitionRecord(
+            (issue_id, issue["updatedAt"]), watermark, "pending"
+        )
+
+    with patch.object(
+        verify_trigger, "process_verify_dispatch", new_callable=AsyncMock
+    ) as dispatch:
+        assert await verify_trigger._process_transition_delivery(issue) is False
+        dispatch.assert_not_awaited()
+
+
 async def test_newer_transition_suppresses_delayed_older_transition():
     older = _fixture_issue()
     newer = _fixture_issue()
