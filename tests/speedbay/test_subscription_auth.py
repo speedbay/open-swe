@@ -447,6 +447,8 @@ print(json.dumps([creds["accessToken"], creds["refreshToken"], source]))
             "refresh-new",
             "keychain-write-fallback",
         ]
+        for secret in ("access-old", "refresh-old", "access-new", "refresh-new"):
+            assert secret not in result.stderr
 
     def test_marked_fallback_survives_later_refresh(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
