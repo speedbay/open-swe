@@ -202,6 +202,48 @@ async def test_dashboard_partial_update_preserves_committed_defaults(
     assert stored["unrelated"] == "preserve"
 
 
+async def test_partial_fable_disable_converts_stored_fable_defaults(
+    fake_store: FakeStore,
+) -> None:
+    """The ZDR kill switch must act on the merged record: disabling Fable in a
+    partial update converts Fable defaults that only exist in the store."""
+    fable = "anthropic:claude-fable-5"
+    fake_store.value = {
+        "fable_enabled": True,
+        "default_agent_model": fable,
+        "default_agent_reasoning_effort": "high",
+        "default_chat_model": fable,
+        "default_chat_reasoning_effort": "high",
+    }
+    await team_settings.upsert_team_settings(team_settings.TeamSettingsUpdate(fable_enabled=False))
+
+    stored = fake_store.value
+    assert stored is not None
+    assert stored["fable_enabled"] is False
+    assert stored["default_agent_model"] != fable
+    assert stored["default_chat_model"] != fable
+
+
+async def test_upsert_response_reflects_committed_write_without_reread(
+    fake_store: FakeStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The PUT response is built from the committed value, so a store read
+    failure after a successful write cannot mask it behind defaults."""
+    original_get_item = FakeStore.get_item
+    writes_seen = len(fake_store.writes)
+
+    async def get_item_fails_after_write(self: FakeStore, namespace: list[str], key: str):
+        if len(self.writes) > writes_seen:
+            raise RuntimeError("transient store read failure")
+        return await original_get_item(self, namespace, key)
+
+    monkeypatch.setattr(FakeStore, "get_item", get_item_fails_after_write)
+    saved = await team_settings.upsert_team_settings(
+        team_settings.TeamSettingsUpdate(org_guidelines="still visible")
+    )
+    assert saved["org_guidelines"] == "still visible"
+
+
 async def test_route_rejects_non_host_clients(fake_store: FakeStore) -> None:
     """The route is host-only: only direct loopback clients, never proxied
     (X-Forwarded-For) or remote traffic."""

@@ -162,14 +162,7 @@ class TeamSettingsUpdate(BaseModel):
             # than reject a payload that still carries a Fable default, swap each
             # Fable default to its safe non-Fable fallback (mirrors the runtime
             # gate_fable_model guard) so the stored record can't advertise Fable.
-            for model_field, effort_field in (
-                ("default_agent_model", "default_agent_reasoning_effort"),
-                ("default_agent_subagent_model", "default_agent_subagent_reasoning_effort"),
-                ("default_reviewer_model", "default_reviewer_reasoning_effort"),
-                ("default_reviewer_subagent_model", "default_reviewer_subagent_reasoning_effort"),
-                ("default_grouping_model", "default_grouping_reasoning_effort"),
-                ("default_chat_model", "default_chat_reasoning_effort"),
-            ):
+            for model_field, effort_field in _MODEL_PAIR_FIELDS:
                 model = getattr(self, model_field)
                 if model in FABLE_MODEL_IDS:
                     new_model, new_effort = gate_fable_model(
@@ -179,6 +172,16 @@ class TeamSettingsUpdate(BaseModel):
                     setattr(self, effort_field, new_effort)
         self.__pydantic_fields_set__ = provided_fields
         return self
+
+
+_MODEL_PAIR_FIELDS: tuple[tuple[str, str], ...] = (
+    ("default_agent_model", "default_agent_reasoning_effort"),
+    ("default_agent_subagent_model", "default_agent_subagent_reasoning_effort"),
+    ("default_reviewer_model", "default_reviewer_reasoning_effort"),
+    ("default_reviewer_subagent_model", "default_reviewer_subagent_reasoning_effort"),
+    ("default_grouping_model", "default_grouping_reasoning_effort"),
+    ("default_chat_model", "default_chat_reasoning_effort"),
+)
 
 
 def _validate_model_effort_pair(model: str | None, effort: str | None, role: str) -> None:
@@ -275,22 +278,12 @@ def _default_settings() -> dict[str, Any]:
     }
 
 
-async def get_team_settings() -> dict[str, Any]:
-    defaults = _default_settings()
-    try:
-        item = await _client().store.get_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY)
-    except Exception as e:
-        logger.debug("team settings lookup failed: %s", e)
-        return defaults
-    if item is None:
-        return defaults
-    value = item.get("value") if isinstance(item, dict) else getattr(item, "value", None)
-    if not isinstance(value, dict):
-        return defaults
-    # Skip None-valued model fields so legacy records (or PUTs that cleared the
-    # selection) still surface the hardcoded default instead of a null.
+def _normalized_settings_view(value: dict[str, Any]) -> dict[str, Any]:
+    """Full response-shaped settings from one stored record: defaults filled in,
+    None-valued fields skipped (so legacy records or PUTs that cleared a
+    selection surface the hardcoded default), stale fields dropped."""
     overlay = {k: v for k, v in value.items() if v is not None}
-    merged = {**defaults, **overlay}
+    merged = {**_default_settings(), **overlay}
     for stale_field in (
         "trigger_mode",
         "autofix_mode",
@@ -300,6 +293,20 @@ async def get_team_settings() -> dict[str, Any]:
     ):
         merged.pop(stale_field, None)
     return normalize_team_settings_for_response(merged)
+
+
+async def get_team_settings() -> dict[str, Any]:
+    try:
+        item = await _client().store.get_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY)
+    except Exception as e:
+        logger.debug("team settings lookup failed: %s", e)
+        return _default_settings()
+    if item is None:
+        return _default_settings()
+    value = item.get("value") if isinstance(item, dict) else getattr(item, "value", None)
+    if not isinstance(value, dict):
+        return _default_settings()
+    return _normalized_settings_view(value)
 
 
 async def upsert_team_settings(update: TeamSettingsUpdate) -> dict[str, Any]:
@@ -316,9 +323,23 @@ async def upsert_team_settings(update: TeamSettingsUpdate) -> dict[str, Any]:
         existing = item.get("value") if isinstance(item, dict) else getattr(item, "value", None)
         value: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
         value.update(update.model_dump(exclude_unset=True))
+        if value.get("fable_enabled") is not True:
+            # ZDR kill switch over the *merged* record: a partial update such as
+            # {"fable_enabled": false} must also convert previously stored Fable
+            # defaults, which the validator (update fields only) cannot see.
+            for model_field, effort_field in _MODEL_PAIR_FIELDS:
+                model = value.get(model_field)
+                if model in FABLE_MODEL_IDS:
+                    new_model, new_effort = gate_fable_model(
+                        model, value.get(effort_field), fable_enabled=False
+                    )
+                    value[model_field] = new_model
+                    value[effort_field] = new_effort
         value["updated_at"] = datetime.now(UTC).isoformat()
         await store.put_item(TEAM_SETTINGS_NAMESPACE, TEAM_SETTINGS_KEY, value)
-    return await get_team_settings()
+    # The committed value itself, response-shaped: no re-read, so a transient
+    # store read failure cannot mask the successful write behind defaults.
+    return _normalized_settings_view(value)
 
 
 async def get_team_default_repo() -> dict[str, str] | None:
