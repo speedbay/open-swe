@@ -149,9 +149,47 @@ async def test_invalidate_discards_in_flight_stale_load() -> None:
     assert await ttl_cache.cached("k", 60, fresh_loader) == "fresh"
 
 
-async def test_commit_replaces_warmed_effective_runtime_pair(fake_store: FakeStore) -> None:
-    from agent import server
+async def _runtime_agent_model_ids(thread_id: str) -> list[str]:
+    """Model ids the public runtime path (server.get_agent) resolves, with only
+    the sandbox/graph seams stubbed; store reads and TTL caches stay real."""
+    from unittest.mock import AsyncMock, MagicMock, patch
 
+    from agent.server import get_agent
+
+    config = {
+        "configurable": {"__is_for_execution__": True, "thread_id": thread_id},
+        "metadata": {},
+    }
+    dummy_agent = MagicMock()
+    dummy_agent.with_config.return_value = dummy_agent
+    with (
+        patch(
+            "agent.server.resolve_github_token", new_callable=AsyncMock, return_value=("ghp", None)
+        ),
+        patch("agent.server.resolve_triggering_user_identity", return_value=None),
+        patch(
+            "agent.server.ensure_sandbox_for_thread",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ),
+        patch(
+            "agent.server.aresolve_sandbox_work_dir",
+            new_callable=AsyncMock,
+            return_value="/workspace",
+        ),
+        patch("agent.server.load_profile", new_callable=AsyncMock, return_value=None),
+        patch("agent.server.fallback_model_id_for", return_value=None),
+        patch("agent.server.make_model", return_value=MagicMock()) as make_model,
+        patch("agent.server.construct_system_prompt", return_value="prompt"),
+        patch("agent.server.create_deep_agent", return_value=dummy_agent),
+    ):
+        await get_agent(config)  # type: ignore[arg-type]
+    return [call.args[0] for call in make_model.call_args_list]
+
+
+async def test_commit_replaces_warmed_effective_runtime_pair(fake_store: FakeStore) -> None:
+    """server.get_agent resolves the committed pair immediately, even when its
+    cached team defaults were warmed with the previous selection."""
     fake_store.value = {
         "fable_enabled": False,
         "default_agent_model": "anthropic:claude-opus-5",
@@ -159,12 +197,14 @@ async def test_commit_replaces_warmed_effective_runtime_pair(fake_store: FakeSto
         "default_agent_subagent_model": "anthropic:claude-opus-5",
         "default_agent_subagent_reasoning_effort": "high",
     }
-    old_main, old_subagent = await server._cached_team_default_model_pair("agent")
-    response = await _commit()
-    new_main, new_subagent = await server._cached_team_default_model_pair("agent")
+    assert await _runtime_agent_model_ids("thread-warm") == [
+        "anthropic:claude-opus-5",
+        "anthropic:claude-opus-5",
+    ]
 
-    assert (old_main, old_subagent) != ((MODEL, EFFORT), (MODEL, EFFORT))
-    assert (new_main, new_subagent) == ((MODEL, EFFORT), (MODEL, EFFORT))
+    response = await _commit()
+
+    assert await _runtime_agent_model_ids("thread-fresh") == [MODEL, MODEL]
     assert response.main.model_dump() == {"model_id": MODEL, "effort": EFFORT}
     assert response.subagent.model_dump() == {"model_id": MODEL, "effort": EFFORT}
 
