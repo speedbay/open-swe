@@ -8,8 +8,12 @@ files and refresh HTTP is monkeypatched; no real credentials are read.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -43,9 +47,17 @@ def _isolate(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def chatgpt_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Point the ChatGPT token-store seam at an existing temp file."""
+    """Point the ChatGPT token-store seam at an existing, parseable temp store."""
     store = tmp_path / "chatgpt-auth.json"
-    store.write_text("{}")
+    store.write_text(
+        json.dumps(
+            {
+                "access_token": "chatgpt-access-sentinel",
+                "refresh_token": "chatgpt-refresh-sentinel",
+                "expires_at": "2099-01-01T00:00:00+00:00",
+            }
+        )
+    )
     monkeypatch.setattr(subscription_auth, "_chatgpt_store_path", lambda: store)
     return store
 
@@ -62,6 +74,63 @@ def captured_init(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     monkeypatch.setattr(model_module, "init_chat_model", fake_init)
     return captured
+
+
+class TestToggleTransitions:
+    """AC: every construction follows the current normalized toggle state."""
+
+    def test_disabling_toggle_bypasses_cached_subscription_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        subscription = object()
+        api_key = object()
+        monkeypatch.setattr(model_module, "subscription_model", lambda *_: subscription)
+        monkeypatch.setattr(model_module, "init_chat_model", lambda **_: api_key)
+
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        assert make_model(_OPENAI_ID) is subscription
+        monkeypatch.setenv(ENV_TOGGLE, "0")
+        assert make_model(_OPENAI_ID) is api_key
+
+    @pytest.mark.parametrize("enabled", ["1", " TRUE ", "YeS", " on "])
+    def test_enabling_toggle_selects_subscription_model(
+        self, monkeypatch: pytest.MonkeyPatch, enabled: str
+    ) -> None:
+        subscription = object()
+        api_key = object()
+        monkeypatch.setattr(model_module, "subscription_model", lambda *_: subscription)
+        monkeypatch.setattr(model_module, "init_chat_model", lambda **_: api_key)
+
+        monkeypatch.setenv(ENV_TOGGLE, "0")
+        assert make_model(_OPENAI_ID) is api_key
+        monkeypatch.setenv(ENV_TOGGLE, enabled)
+        assert make_model(_OPENAI_ID) is subscription
+
+    def test_same_state_reuse_remains_event_loop_isolated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = 0
+
+        def build_subscription(*_: object) -> object:
+            nonlocal calls
+            calls += 1
+            return object()
+
+        async def build_model() -> object:
+            return make_model(_OPENAI_ID)
+
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setattr(model_module, "subscription_model", build_subscription)
+        first_loop = asyncio.new_event_loop()
+        second_loop = asyncio.new_event_loop()
+        try:
+            first = first_loop.run_until_complete(build_model())
+            assert first_loop.run_until_complete(build_model()) is first
+            assert second_loop.run_until_complete(build_model()) is not first
+        finally:
+            first_loop.close()
+            second_loop.close()
+        assert calls == 2
 
 
 class TestDisabledIsByteIdentical:
@@ -134,13 +203,16 @@ class TestOpenAIBranch:
         )
         assert model is not None
 
-    def test_explicit_api_key_falls_through_to_api_key_path(
+    def test_explicit_api_key_raises_instead_of_bypassing_oauth(
         self, monkeypatch: pytest.MonkeyPatch, chatgpt_store: Path
     ) -> None:
-        """A caller-supplied api_key means API-key auth was requested; honor it."""
+        """Enabled subscription auth must never be bypassed by an explicit key."""
         monkeypatch.setenv(ENV_TOGGLE, "1")
-        assert subscription_model(_OPENAI_ID, {"api_key": "sk-explicit"}) is None
-        assert subscription_model(_OPENAI_ID, {"openai_api_key": "sk-explicit"}) is None
+        for key_name in ("api_key", "openai_api_key"):
+            with pytest.raises(RuntimeError, match="never be bypassed") as excinfo:
+                subscription_model(_OPENAI_ID, {key_name: "sk-explicit"})
+            assert key_name in str(excinfo.value)
+            assert "sk-explicit" not in str(excinfo.value)
 
     def test_caller_include_list_is_not_mutated(
         self, monkeypatch: pytest.MonkeyPatch, chatgpt_store: Path
@@ -173,27 +245,74 @@ class TestOpenAIBranch:
         assert explicit.reasoning == {"effort": "high"}
 
 
-class TestFailOpenFallthrough:
-    """AC: missing store or unsupported provider falls through with one warning."""
+class TestFailClosedCredentials:
+    """AC: enabled subscription auth with unusable credentials never bills a key."""
 
-    def test_missing_store_falls_through_to_api_key_path(
+    def test_missing_openai_store_never_reaches_api_key_model(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         captured_init: dict[str, Any],
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env-openai-sentinel")
         monkeypatch.setattr(
             subscription_auth, "_chatgpt_store_path", lambda: tmp_path / "missing.json"
         )
-        with caplog.at_level(logging.WARNING, logger=subscription_auth.__name__):
+        with pytest.raises(RuntimeError, match="refusing to fall back") as excinfo:
             make_model(_OPENAI_ID, max_tokens=1)
-            model_module._MODEL_CACHE.clear()
-            make_model(_OPENAI_ID, max_tokens=2)
-        assert captured_init["kwargs"]["max_tokens"] == 2
-        warnings = [r for r in caplog.records if "no ChatGPT OAuth token store" in r.message]
-        assert len(warnings) == 1
+        assert captured_init == {}  # init_chat_model never called
+        assert "sk-env-openai-sentinel" not in str(excinfo.value)
+        assert "login_chatgpt_device" in str(excinfo.value)
+
+    @pytest.mark.parametrize("store_content", ["", '{"access_token": "chatgpt-access-sentinel"}'])
+    def test_unusable_openai_store_never_reaches_api_key_model(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        captured_init: dict[str, Any],
+        store_content: str,
+    ) -> None:
+        """An existing empty or schema-incomplete store fails at construction."""
+        store = tmp_path / "chatgpt-auth.json"
+        store.write_text(store_content)
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env-openai-sentinel")
+        monkeypatch.setattr(subscription_auth, "_chatgpt_store_path", lambda: store)
+        with pytest.raises(RuntimeError, match="unusable") as excinfo:
+            make_model(_OPENAI_ID, max_tokens=1)
+        assert captured_init == {}  # init_chat_model never called
+        for secret in ("sk-env-openai-sentinel", "chatgpt-access-sentinel"):
+            assert secret not in str(excinfo.value)
+        assert "login_chatgpt_device" in str(excinfo.value)
+
+    @pytest.mark.parametrize("store_state", ["missing", "incomplete"])
+    def test_unusable_anthropic_store_never_reaches_api_key_model(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        captured_init: dict[str, Any],
+        store_state: str,
+    ) -> None:
+        store = tmp_path / "credentials.json"
+        if store_state == "incomplete":
+            # Parseable store missing refreshToken; its one value is a sentinel
+            # that must never surface in the redacted diagnostic.
+            store.write_text(json.dumps({"claudeAiOauth": {"accessToken": "access-old"}}))
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env-sentinel")
+        monkeypatch.setattr(claude_code_model, "_default_credentials_path", lambda: store)
+        monkeypatch.setattr(claude_code_model, "_default_use_keychain", lambda: False)
+        with pytest.raises(RuntimeError, match="refusing to fall back") as excinfo:
+            make_model("anthropic:claude-opus-5", max_tokens=64)
+        assert captured_init == {}  # init_chat_model never called
+        for secret in ("sk-ant-env-sentinel", "access-old"):
+            assert secret not in str(excinfo.value)
+        assert "`claude`" in str(excinfo.value)
+
+
+class TestFailOpenFallthrough:
+    """AC: an unsupported provider still falls through with one warning."""
 
     def test_provider_without_branch_returns_none_with_one_warning(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -239,6 +358,39 @@ class TestClaudeTokenProvider:
         store = tmp_path / "credentials.json"
         _write_claude_store(store, expires_in_seconds=expires_in_seconds)
         return ClaudeCodeTokenProvider(path=store, use_keychain=False)
+
+    def _keychain_write_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> tuple[ClaudeCodeTokenProvider, dict[str, Any], list[list[str]]]:
+        store = tmp_path / "credentials.json"
+        stale = _write_claude_store(store, expires_in_seconds=-10)
+        keychain_payload = json.dumps({"claudeAiOauth": stale}).encode()
+        commands: list[list[str]] = []
+
+        def fake_security(command: list[str], **_: Any) -> subprocess.CompletedProcess[bytes]:
+            commands.append(command)
+            if command[1] == "find-generic-password":
+                return subprocess.CompletedProcess(command, 0, stdout=keychain_payload, stderr=b"")
+            raise subprocess.CalledProcessError(
+                1, command, stderr=b"write failed for access-new refresh-new"
+            )
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return {
+                    "access_token": "access-new",
+                    "refresh_token": "refresh-new",
+                    "expires_in": 3600,
+                }
+
+        import httpx
+
+        monkeypatch.setattr(subprocess, "run", fake_security)
+        monkeypatch.setattr(httpx, "post", lambda *_, **__: _Response())
+        return ClaudeCodeTokenProvider(path=store, use_keychain=True), stale, commands
 
     def test_fresh_token_returned_without_refresh(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -291,6 +443,136 @@ class TestClaudeTokenProvider:
         with pytest.raises(FileNotFoundError):
             provider.read()
 
+    def test_keychain_write_failure_prefers_rotated_file_in_process(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        provider, _, commands = self._keychain_write_failure(monkeypatch, tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger=claude_code_model.__name__):
+            assert provider.get_token() == "access-new"
+
+        current, current_source = provider.read()
+        restarted, restarted_source = ClaudeCodeTokenProvider(
+            path=provider.path, use_keychain=True
+        ).read()
+        assert current["refreshToken"] == restarted["refreshToken"] == "refresh-new"
+        assert current_source == restarted_source == "keychain-write-fallback"
+        assert sum(command[1] == "find-generic-password" for command in commands) == 2
+        assert provider.path.stat().st_mode & 0o777 == 0o600
+        for secret in ("access-old", "refresh-old", "access-new", "refresh-new"):
+            assert secret not in caplog.text
+
+    def test_keychain_write_failure_prefers_rotated_file_after_restart(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        real_run = subprocess.run
+        provider, stale, _ = self._keychain_write_failure(monkeypatch, tmp_path)
+        assert provider.get_token() == "access-new"
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        security = bin_dir / "security"
+        keychain_payload = json.dumps({"claudeAiOauth": stale})
+        security.write_text(
+            f"#!/usr/bin/env python3\nimport sys\nsys.stdout.write({keychain_payload!r})\n"
+        )
+        security.chmod(0o755)
+        script = """
+import json
+import sys
+from pathlib import Path
+from agent.speedbay.claude_code_model import ClaudeCodeTokenProvider
+
+creds, source = ClaudeCodeTokenProvider(path=Path(sys.argv[1]), use_keychain=True).read()
+print(json.dumps([creds["accessToken"], creds["refreshToken"], source]))
+"""
+        result = real_run(
+            [sys.executable, "-c", script, str(provider.path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parents[2],
+            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        )
+        assert json.loads(result.stdout) == [
+            "access-new",
+            "refresh-new",
+            "keychain-write-fallback",
+        ]
+        for secret in ("access-old", "refresh-old", "access-new", "refresh-new"):
+            assert secret not in result.stderr
+
+    def test_marked_fallback_survives_later_refresh(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        provider, _, commands = self._keychain_write_failure(monkeypatch, tmp_path)
+        assert provider.get_token() == "access-new"
+        wrapper = json.loads(provider.path.read_text())
+        wrapper["claudeAiOauth"]["expiresAt"] = 0
+        provider.path.write_text(json.dumps(wrapper))
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return {
+                    "access_token": "access-newest",
+                    "refresh_token": "refresh-newest",
+                    "expires_in": 3600,
+                }
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "post", lambda *_, **__: _Response())
+        assert provider.get_token() == "access-newest"
+        latest, source = ClaudeCodeTokenProvider(path=provider.path, use_keychain=True).read()
+        assert latest["refreshToken"] == "refresh-newest"
+        assert source == "keychain-write-fallback"
+        assert provider.path.stat().st_mode & 0o777 == 0o600
+        assert sum(command[1] == "find-generic-password" for command in commands) == 2
+
+    @pytest.mark.parametrize(
+        "wrapper",
+        [
+            {"speedbayCredentialSource": "keychain-write-fallback", "claudeAiOauth": {}},
+            *[
+                {
+                    "speedbayCredentialSource": "keychain-write-fallback",
+                    "claudeAiOauth": {
+                        "accessToken": "file-access",
+                        "refreshToken": "file-refresh",
+                        "expiresAt": expires_at,
+                    },
+                }
+                for expires_at in ("invalid", "NaN", "Infinity", "-Infinity")
+            ],
+            {"claudeAiOauth": {"accessToken": "unmarked", "refreshToken": "unmarked"}},
+        ],
+    )
+    def test_invalid_or_unmarked_fallback_does_not_override_keychain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, wrapper: dict[str, Any]
+    ) -> None:
+        store = tmp_path / "credentials.json"
+        store.write_text(json.dumps(wrapper))
+        keychain = {
+            "accessToken": "keychain-access",
+            "refreshToken": "keychain-refresh",
+            "expiresAt": int((time.time() + 3600) * 1000),
+        }
+
+        def fake_security(command: list[str], **_: Any) -> subprocess.CompletedProcess[bytes]:
+            payload = json.dumps({"claudeAiOauth": keychain}).encode()
+            return subprocess.CompletedProcess(command, 0, stdout=payload, stderr=b"")
+
+        monkeypatch.setattr(subprocess, "run", fake_security)
+        creds, source = ClaudeCodeTokenProvider(path=store, use_keychain=True).read()
+        assert creds == keychain
+        assert source == "keychain"
+
 
 class TestChatClaudeCode:
     """AC: payloads carry the Claude Code identity block and OAuth headers."""
@@ -330,7 +612,7 @@ class TestChatClaudeCode:
 
 
 class TestAnthropicBranch:
-    """AC: make_model routes anthropic ids through ChatClaudeCode, fail-open."""
+    """AC: make_model routes anthropic ids through ChatClaudeCode."""
 
     def test_make_model_returns_chat_claude_code(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -344,23 +626,32 @@ class TestAnthropicBranch:
         assert isinstance(model, ChatClaudeCode)
         assert model.token_provider.path == store
 
-    def test_unreadable_store_falls_through_to_api_key_path(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        captured_init: dict[str, Any],
-        caplog: pytest.LogCaptureFixture,
+    def test_explicit_api_key_raises_instead_of_bypassing_oauth(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        """Enabled subscription auth must never be bypassed by an explicit key."""
+        store = tmp_path / "credentials.json"
+        _write_claude_store(store, expires_in_seconds=3600)
         monkeypatch.setenv(ENV_TOGGLE, "1")
-        monkeypatch.setattr(
-            claude_code_model, "_default_credentials_path", lambda: tmp_path / "missing.json"
-        )
+        monkeypatch.setattr(claude_code_model, "_default_credentials_path", lambda: store)
         monkeypatch.setattr(claude_code_model, "_default_use_keychain", lambda: False)
-        with caplog.at_level(logging.WARNING, logger=subscription_auth.__name__):
-            make_model("anthropic:claude-opus-5", max_tokens=64)
-        assert captured_init["model"] == "anthropic:claude-opus-5"
-        warnings = [r for r in caplog.records if "Claude Code credential store" in r.message]
-        assert len(warnings) == 1
+        for key_name in ("api_key", "anthropic_api_key"):
+            with pytest.raises(RuntimeError, match="never be bypassed") as excinfo:
+                subscription_model("anthropic:claude-opus-5", {key_name: "sk-ant-explicit"})
+            assert key_name in str(excinfo.value)
+            assert "sk-ant-explicit" not in str(excinfo.value)
+
+    def test_environment_api_key_does_not_bypass_subscription_oauth(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        store = tmp_path / "credentials.json"
+        _write_claude_store(store, expires_in_seconds=3600)
+        monkeypatch.setenv(ENV_TOGGLE, "1")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "environment-only-key")
+        monkeypatch.setattr(claude_code_model, "_default_credentials_path", lambda: store)
+        monkeypatch.setattr(claude_code_model, "_default_use_keychain", lambda: False)
+        model = make_model("anthropic:claude-opus-5", max_tokens=64)
+        assert isinstance(model, ChatClaudeCode)
 
     async def test_in_loop_construction_skips_the_blocking_probe(
         self, monkeypatch: pytest.MonkeyPatch
@@ -381,17 +672,14 @@ class TestAnthropicBranch:
         model = subscription_model("anthropic:claude-opus-5", {})
         assert isinstance(model, ChatClaudeCode)
 
-    def test_empty_store_falls_through_to_api_key_path(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        captured_init: dict[str, Any],
+    async def test_in_loop_openai_construction_skips_the_blocking_probe(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """A parseable store without the token fields must not construct a model."""
-        store = tmp_path / "credentials.json"
-        store.write_text(json.dumps({"claudeAiOauth": {}}))
+        """Same in-loop optimism for the OpenAI store probe: unusable content
+        must not block construction inside a running event loop."""
+        store = tmp_path / "chatgpt-auth.json"
+        store.write_text("")  # unusable off-loop; must be ignored in-loop
         monkeypatch.setenv(ENV_TOGGLE, "1")
-        monkeypatch.setattr(claude_code_model, "_default_credentials_path", lambda: store)
-        monkeypatch.setattr(claude_code_model, "_default_use_keychain", lambda: False)
-        make_model("anthropic:claude-opus-5", max_tokens=64)
-        assert captured_init["model"] == "anthropic:claude-opus-5"
+        monkeypatch.setattr(subscription_auth, "_chatgpt_store_path", lambda: store)
+        model = subscription_model(_OPENAI_ID, {})
+        assert model is not None

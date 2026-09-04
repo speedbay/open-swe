@@ -20,6 +20,10 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 
 logger = logging.getLogger(__name__)
 
+# SPEEDBAY DEVIATION (OPE-125): Detached cancellation-resistant calls must not
+# extend the model-call wall-clock deadline; see FORK.md.
+_detached_model_call_tasks: set[asyncio.Task[ModelResponse]] = set()
+
 # Above the provider-level ``timeout`` (agent.utils.model), so a stalled HTTP
 # request fails and retries inside the provider client first and this only fires
 # for stalls the provider never notices.
@@ -53,10 +57,27 @@ class ModelCallTimeoutMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
+        task = asyncio.create_task(handler(request))
         try:
-            return await asyncio.wait_for(handler(request), timeout=self._timeout_seconds)
-        except TimeoutError as exc:
-            logger.warning("Model call exceeded %ss deadline; aborting", self._timeout_seconds)
-            raise ModelCallTimeoutError(
-                f"Model call exceeded the {self._timeout_seconds}s deadline"
-            ) from exc
+            done, _ = await asyncio.wait({task}, timeout=self._timeout_seconds)
+        except asyncio.CancelledError:
+            self._detach_cancelled_task(task)
+            raise
+        if done:
+            return task.result()
+
+        self._detach_cancelled_task(task)
+        logger.warning("Model call exceeded %ss deadline; aborting", self._timeout_seconds)
+        raise ModelCallTimeoutError(f"Model call exceeded the {self._timeout_seconds}s deadline")
+
+    @staticmethod
+    def _detach_cancelled_task(task: asyncio.Task[ModelResponse]) -> None:
+        task.cancel()
+        _detached_model_call_tasks.add(task)
+
+        def _observe_detached_task(completed_task: asyncio.Task[ModelResponse]) -> None:
+            _detached_model_call_tasks.discard(completed_task)
+            if not completed_task.cancelled():
+                completed_task.exception()
+
+        task.add_done_callback(_observe_detached_task)

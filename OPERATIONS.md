@@ -247,9 +247,19 @@ multi-process deployments require storage-level locking or compare-and-set.
 Opt-in replacement for metered API-key billing on model calls: with
 `SPEEDBAY_SUBSCRIPTION_AUTH=1` in `.env`, `make_model` builds OpenAI models
 authenticated by the team's ChatGPT subscription OAuth tokens
-(`_ChatOpenAICodex`, ChatGPT codex backend). Fail-open: unset toggle, missing
-credentials, or a provider without a subscription branch all fall back to the
-unchanged API-key path with one warning in `/tmp/openswe-backend.log`.
+(`_ChatOpenAICodex`, ChatGPT codex backend). An unset toggle falls back to the
+unchanged API-key path. An enabled provider without a subscription branch
+falls back to that path with one warning in `/tmp/openswe-backend.log`. Enabled OpenAI/Anthropic
+subscription auth is **fail-closed** (OPE-175): missing or unusable
+subscription credentials make model construction raise a redacted error
+instead of silently billing a metered API key. Inside a running event loop
+(async graph factories) the blocking credential-store probe is skipped, so
+an unusable store fails on the first model call instead — through the OAuth
+model itself. Server graph factories may also surface a construction error
+as a `DeferredErrorModel` that fails on first model call; either way no
+metered request is made. Recovery: `login_chatgpt_device()`
+(OpenAI) or run `claude` once on this machine (Anthropic), or unset the
+toggle.
 
 One-time login per machine (headless device-code flow; token store
 `~/.langchain/chatgpt-auth.json`, refresh + rotation handled automatically):
@@ -267,7 +277,23 @@ Do **not** copy the token store between machines — refresh tokens rotate on
 use, so two hosts sharing a copied store invalidate each other. Log in once
 per host instead. This is an unofficial subscription-token path (the class
 warns "experimental and unofficial" at construction); the toggle keeps
-API-key billing the default. Restart the backend after changing the toggle.
+API-key billing the default. A toggle change applies to subsequent `make_model`
+calls without a backend restart; model objects already returned keep their
+original authentication source.
+
+If a Claude refresh succeeds but Keychain write-back fails, the rotated token
+pair is stored in `~/.claude/.credentials.json` with a fallback marker. That
+file remains authoritative across restarts until Keychain is repaired. After a
+successful new `claude` login, verify the Keychain item exists without printing
+its value, then remove the marked fallback:
+
+```bash
+security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 && \
+  rm ~/.claude/.credentials.json
+```
+
+Run the removal only after the Keychain check succeeds. The fallback file
+contains OAuth credentials: never print it or copy it into a sandbox.
 
 ## Linear trigger
 
