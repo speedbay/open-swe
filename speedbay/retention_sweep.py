@@ -6,13 +6,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 from langgraph_sdk import get_client
 
 DEFAULT_RETENTION_DAYS = 10
 PAGE_SIZE = 100
+DELETE_PATH = "/internal/thread-retention/delete"
 DELETABLE_STATUSES = {"idle", "error"}
 logger = logging.getLogger(__name__)
 
@@ -42,24 +45,6 @@ def _timestamp(value: Any) -> datetime | None:
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
-async def _cron_thread_ids(client: Any) -> set[str]:
-    thread_ids: set[str] = set()
-    offset = 0
-    while True:
-        page = await client.crons.search(
-            limit=PAGE_SIZE,
-            offset=offset,
-            select=["thread_id"],
-        )
-        for cron in page:
-            thread_id = cron.get("thread_id")
-            if isinstance(thread_id, str) and thread_id:
-                thread_ids.add(thread_id)
-        if len(page) < PAGE_SIZE:
-            return thread_ids
-        offset += len(page)
-
-
 def _is_deletable(thread: dict[str, Any], cutoff: datetime) -> bool:
     updated_at = _timestamp(thread.get("updated_at"))
     return (
@@ -70,7 +55,11 @@ def _is_deletable(thread: dict[str, Any], cutoff: datetime) -> bool:
 
 
 async def sweep(
-    client: Any, *, now: datetime | None = None, days: int | None = None
+    client: Any,
+    delete_thread: Callable[[str, datetime], Awaitable[bool]],
+    *,
+    now: datetime | None = None,
+    days: int | None = None,
 ) -> dict[str, Any]:
     """Delete qualifying threads and return summary counts."""
     current_time = now or datetime.now(UTC)
@@ -80,14 +69,14 @@ async def sweep(
     if retention <= 0:
         raise ValueError("retention days must be a positive integer")
     cutoff = current_time.astimezone(UTC) - timedelta(days=retention)
-    cron_thread_ids = await _cron_thread_ids(client)
     candidates: list[str] = []
     scanned = 0
     offset = 0
+    initial_count = await client.threads.count()
 
-    while True:
+    while offset < initial_count:
         page = await client.threads.search(
-            limit=PAGE_SIZE,
+            limit=min(PAGE_SIZE, initial_count - offset),
             offset=offset,
             sort_by="created_at",
             sort_order="asc",
@@ -96,26 +85,13 @@ async def sweep(
         scanned += len(page)
         for thread in page:
             thread_id = thread.get("thread_id")
-            if (
-                isinstance(thread_id, str)
-                and thread_id
-                and _is_deletable(thread, cutoff)
-                and thread_id not in cron_thread_ids
-            ):
+            if isinstance(thread_id, str) and thread_id and _is_deletable(thread, cutoff):
                 candidates.append(thread_id)
-        if len(page) < PAGE_SIZE:
+        if not page:
             break
         offset += len(page)
 
-    deleted = 0
-    for thread_id in candidates:
-        if await client.crons.search(thread_id=thread_id, limit=1):
-            continue
-        thread = await client.threads.get(thread_id)
-        if not _is_deletable(thread, cutoff):
-            continue
-        await client.threads.delete(thread_id)
-        deleted += 1
+    deleted = sum([await delete_thread(thread_id, cutoff) for thread_id in candidates])
 
     summary = {
         "scanned": scanned,
@@ -133,11 +109,23 @@ async def sweep(
     return summary
 
 
+async def _delete_thread(http: httpx.AsyncClient, thread_id: str, cutoff: datetime) -> bool:
+    response = await http.post(
+        DELETE_PATH,
+        json={"thread_id": thread_id, "cutoff": cutoff.isoformat()},
+    )
+    response.raise_for_status()
+    return response.json()["deleted"] is True
+
+
 async def main() -> None:
     url = os.environ.get("LANGGRAPH_URL") or os.environ.get(
         "LANGGRAPH_URL_PROD", "http://127.0.0.1:2024"
     )
-    await sweep(get_client(url=url))
+    async with httpx.AsyncClient(base_url="http://127.0.0.1:2024") as http:
+        await sweep(
+            get_client(url=url), lambda thread_id, cutoff: _delete_thread(http, thread_id, cutoff)
+        )
 
 
 if __name__ == "__main__":

@@ -361,10 +361,12 @@ images, networks, volumes, and build cache are out of scope. Enable it on the ho
 ### Thread retention
 
 A daily systemd timer (`openswe-thread-retention.timer`) deletes `idle` and `error` threads
-whose last update is more than 10 days old. It never deletes `busy`, `interrupted`, or
-cron-referenced threads. Set `OPENSWE_THREAD_RETENTION_DAYS` in `.env` to override the 10-day
-default. Enable it with `sudo systemctl enable --now openswe-thread-retention.timer`, check it
-with `systemctl status openswe-thread-retention.timer`, and run it manually with:
+whose last update is more than 10 days old. The scanner takes a bounded snapshot, then a
+loopback-only backend endpoint atomically rechecks status, age, and cron ownership before each
+delete, so it never deletes `busy`, `interrupted`, or cron-referenced threads. Set
+`OPENSWE_THREAD_RETENTION_DAYS` in `.env` to override the 10-day default. Enable it with
+`sudo systemctl enable --now openswe-thread-retention.timer`, check it with
+`systemctl status openswe-thread-retention.timer`, and run it manually with:
 
 ```bash
 sudo systemctl start openswe-thread-retention.service
