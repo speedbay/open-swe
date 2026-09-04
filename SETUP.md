@@ -107,6 +107,10 @@ sudo usermod -aG docker openswe
 Provision an 8 GiB swapfile as a pressure buffer and persist it across reboots:
 
 ```bash
+if [ "$(stat -f -c %T /)" = btrfs ]; then
+    sudo touch /swapfile
+    sudo chattr +C /swapfile
+fi
 sudo fallocate -l 8G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
