@@ -110,18 +110,30 @@ def test_production_file_cap_boundary_and_test_exclusion() -> None:
     assert any("production-file count" in reason for reason in over.exceeded)
 
 
-def test_parse_numstat_including_binary() -> None:
-    rows = parse_numstat("10\t2\tagent/api.py\n-\t-\tassets/logo.png\n\nnot a row")
+def test_parse_numstat_ignores_blank_lines_and_includes_binary() -> None:
+    rows = parse_numstat("\n10\t2\tagent/api.py\n\n-\t-\tassets/logo.png\n")
     assert rows == [NumstatRow(10, 2, "agent/api.py"), NumstatRow(0, 0, "assets/logo.png")]
     verdict = check_atomicity(rows)
     assert verdict.production_files == 2  # binary file still counts toward the file cap
 
 
-def test_parse_numstat_rejects_malformed_counts_and_negative_rows() -> None:
-    with pytest.raises(ValueError, match="malformed numstat count 'x'"):
-        parse_numstat("x\t200\tagent/api.py")
-    with pytest.raises(ValueError, match="malformed numstat count '-3'"):
-        parse_numstat("-3\t0\tagent/api.py")
+@pytest.mark.parametrize(
+    ("row", "reason"),
+    [
+        ("x\t200\tagent/api.py", "count 'x'"),
+        ("-3\t0\tagent/api.py", "count '-3'"),
+        ("10\t2", "exactly two tab separators"),
+        ("10\t2\tagent/api.py\textra", "exactly two tab separators"),
+        ("10\t2\t", "empty raw path"),
+        ("10\t2\told => ", "empty postimage path"),
+    ],
+)
+def test_parse_numstat_rejects_malformed_non_empty_rows(row: str, reason: str) -> None:
+    with pytest.raises(ValueError, match=f"malformed numstat.*{reason}"):
+        parse_numstat(row)
+
+
+def test_numstat_rows_reject_negative_counts() -> None:
     with pytest.raises(ValueError):
         NumstatRow(-1, 0, "agent/api.py")
     with pytest.raises(ValueError):

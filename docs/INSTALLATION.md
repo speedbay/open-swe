@@ -5,7 +5,18 @@ This guide walks you through setting up Open SWE end-to-end: local development, 
 
 Open SWE has two runnable pieces:
 
-- **The backend** — a LangGraph app (three graphs: `agent`, `reviewer`, `analyzer`) plus a FastAPI app (`agent.webapp:app`) that owns the webhooks and the dashboard API. Both are served together by `langgraph dev`.
+- **The backend** — a LangGraph app plus a FastAPI app (`agent.webapp:app`) that owns the webhooks and the dashboard API. Both are served together by `langgraph dev`.
+
+<!-- SPEEDBAY DEVIATION (OPE-136): source-checked graph inventory; see FORK.md -->
+
+| Graph | Purpose |
+|---|---|
+| `agent` | Main sandboxed coding agent. |
+| `reviewer` | Read-only pull-request reviewer. |
+| `analyzer` | Per-repository review-style learner. |
+| `chat` | Read-only pull-request chat agent without a sandbox. |
+| `scheduler` | Scheduled-run and maintenance-task dispatcher. |
+
 - **The dashboard** — a TanStack Start + Vite web app in `ui/` (package name `open-swe-dashboard`). It's a thin client over the FastAPI dashboard API (`/dashboard/api/*`): GitHub-login, per-user model/profile settings, team defaults, enabled-repo and review-style management, user mappings, and the Agents chat UI. It's optional for pure webhook-driven use, but recommended.
 
 > **The steps are ordered to avoid forward references.** Each step only depends on things you've already completed.
@@ -561,7 +572,7 @@ make dev          # uv run langgraph dev
 # or: uv run langgraph dev --no-browser
 ```
 
-`langgraph dev` serves **all three graphs** (`agent`, `reviewer`, `analyzer`) *and* the FastAPI app (`agent.webapp:app`) together on `http://localhost:2024`. The FastAPI app owns both the webhooks and the dashboard API:
+`langgraph dev` serves every graph in the canonical inventory above *and* the FastAPI app (`agent.webapp:app`) together on `http://localhost:2024`. The FastAPI app owns both the webhooks and the dashboard API:
 
 | Endpoint | Purpose |
 |---|---|
