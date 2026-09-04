@@ -36,11 +36,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
+import attrs
 from fastapi import BackgroundTasks
 from langgraph_sdk.schema import MultitaskStrategy
 
@@ -90,7 +90,7 @@ def is_verify_transition(payload: dict[str, Any]) -> bool:
 _SEEN_MAX = 512
 
 
-@dataclass
+@attrs.define(frozen=True)
 class _TransitionRecord:
     identity: tuple[str, str]
     watermark: datetime
@@ -153,7 +153,7 @@ async def _process_transition_delivery(issue_data: dict[str, Any]) -> bool:
     elif current.identity == identity:
         if current.state in {"pending", "succeeded"}:
             return False
-        current.state = "pending"
+        _transition_records[issue_id] = attrs.evolve(current, state="pending")
         tracked = True
     elif watermark <= current.watermark:
         return False
@@ -169,12 +169,14 @@ async def _process_transition_delivery(issue_data: dict[str, Any]) -> bool:
         if tracked and _transition_records.get(issue_id) is not None:
             current = _transition_records[issue_id]
             if current.identity == identity:
-                current.state = "retryable"
+                _transition_records[issue_id] = attrs.evolve(current, state="retryable")
         raise
     if tracked and _transition_records.get(issue_id) is not None:
         current = _transition_records[issue_id]
         if current.identity == identity:
-            current.state = "succeeded" if dispatched else "retryable"
+            _transition_records[issue_id] = attrs.evolve(
+                current, state="succeeded" if dispatched else "retryable"
+            )
     return dispatched
 
 
