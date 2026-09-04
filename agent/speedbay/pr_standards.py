@@ -584,7 +584,13 @@ class PRStandardsMiddleware(AgentMiddleware):
                 )
                 return None
             numstat, truncated, base_sha, head_sha = diff
-            verdict = check_atomicity(parse_numstat(numstat))
+            parse_failure: str | None = None
+            try:
+                verdict = check_atomicity(parse_numstat(numstat))
+            except ValueError as exc:
+                parse_failure = str(exc)
+                verdict = check_atomicity([])
+                verdict = attrs.evolve(verdict, passed=False, exceeded=(parse_failure,))
             if truncated:  # missing rows would undercount — fail closed
                 verdict = attrs.evolve(
                     verdict,
@@ -651,11 +657,18 @@ class PRStandardsMiddleware(AgentMiddleware):
         failed_rule_ids = ["atomicity"] * (not verdict.passed) + [v.rule for v in violations]
         advice: list[str] = []
         if not verdict.passed:
-            advice.append(
-                "Atomicity caps exceeded: " + "; ".join(verdict.exceeded) + ". Split the "
-                "change into smaller, independently reviewable PRs (one vertical slice "
-                "each)."
-            )
+            if parse_failure:
+                advice.append(
+                    "Atomicity numstat parsing failed: "
+                    + parse_failure
+                    + ". Inspect and correct the git diff --numstat output before retrying."
+                )
+            else:
+                advice.append(
+                    "Atomicity caps exceeded: " + "; ".join(verdict.exceeded) + ". Split the "
+                    "change into smaller, independently reviewable PRs (one vertical slice "
+                    "each)."
+                )
         if violations:
             advice.append(
                 "Commit hygiene violations: "
