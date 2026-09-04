@@ -4,16 +4,39 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from langgraph.runtime import Runtime
 
 from agent import reviewer, server
 from agent.utils.sandbox_state import SandboxUnreachableError
 
 
-def _middleware(cls: type[Any], thread_id: str) -> Any:
-    middleware = object.__new__(cls)
-    middleware._thread_id = thread_id
-    middleware._config = {"configurable": {}}
-    return middleware
+def _agent_middleware(thread_id: str) -> server.PrepareAgentRunMiddleware:
+    return server.PrepareAgentRunMiddleware(
+        thread_id=thread_id,
+        config={"configurable": {}},
+        profile_login=None,
+        model_id="test-model",
+        effort=None,
+        source="test",
+        user_email="",
+        linear_project_id="",
+        linear_issue_number="",
+        create_prs=False,
+        plan_mode=False,
+        corridor_enabled=False,
+    )
+
+
+def _reviewer_middleware(thread_id: str) -> reviewer.PrepareReviewerRunMiddleware:
+    return reviewer.PrepareReviewerRunMiddleware(
+        thread_id=thread_id,
+        config={"configurable": {}},
+        use_gateway=False,
+    )
+
+
+async def _run_prepare(middleware: Any) -> None:
+    await middleware.abefore_agent({"messages": []}, MagicMock(spec=Runtime))
 
 
 def _agent_setup(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
@@ -27,7 +50,7 @@ async def _assert_failure(
     middleware: Any, error: SandboxUnreachableError, caplog: pytest.LogCaptureFixture, source: str
 ) -> None:
     with pytest.raises(SandboxUnreachableError) as excinfo:
-        await middleware._prepare({"messages": []}, MagicMock())
+        await _run_prepare(middleware)
     assert excinfo.value is error
     assert any(
         f"source={source} thread_id={error.thread_id} sandbox_id={error.sandbox_id}" in m
@@ -47,9 +70,7 @@ async def test_agent_notification_failure_preserves_sandbox_unreachable_error(
         AsyncMock(side_effect=RuntimeError("delivery failed")),
     )
     caplog.set_level(logging.ERROR, logger=server.logger.name)
-    await _assert_failure(
-        _middleware(server.PrepareAgentRunMiddleware, error.thread_id), error, caplog, "agent"
-    )
+    await _assert_failure(_agent_middleware(error.thread_id), error, caplog, "agent")
     assert "delivery failed" in caplog.text
 
 
@@ -67,12 +88,7 @@ async def test_reviewer_notification_failure_preserves_sandbox_unreachable_error
         AsyncMock(side_effect=RuntimeError("delivery failed")),
     )
     caplog.set_level(logging.ERROR, logger=reviewer.logger.name)
-    await _assert_failure(
-        _middleware(reviewer.PrepareReviewerRunMiddleware, error.thread_id),
-        error,
-        caplog,
-        "reviewer",
-    )
+    await _assert_failure(_reviewer_middleware(error.thread_id), error, caplog, "reviewer")
     assert "delivery failed" in caplog.text
 
 
@@ -89,7 +105,7 @@ async def _assert_awaited(
     notify_mock = AsyncMock(side_effect=notify)
     monkeypatch.setattr(module, "post_sandbox_unreachable_notification", notify_mock)
     with pytest.raises(SandboxUnreachableError) as excinfo:
-        await middleware._prepare({"messages": []}, MagicMock())
+        await _run_prepare(middleware)
     assert completed and excinfo.value is error
     if module is reviewer:
         assert notify_mock.await_args is not None
@@ -102,9 +118,7 @@ async def test_agent_successful_notification_is_awaited_before_sandbox_unreachab
 ) -> None:
     error = SandboxUnreachableError("agent-thread", "agent-sandbox", "unreachable")
     _agent_setup(monkeypatch, error)
-    await _assert_awaited(
-        monkeypatch, server, _middleware(server.PrepareAgentRunMiddleware, error.thread_id), error
-    )
+    await _assert_awaited(monkeypatch, server, _agent_middleware(error.thread_id), error)
 
 
 @pytest.mark.asyncio
@@ -115,9 +129,4 @@ async def test_reviewer_successful_notification_is_awaited_before_sandbox_unreac
     monkeypatch.setattr(
         reviewer, "_ensure_reviewer_sandbox_for_thread", AsyncMock(side_effect=error)
     )
-    await _assert_awaited(
-        monkeypatch,
-        reviewer,
-        _middleware(reviewer.PrepareReviewerRunMiddleware, error.thread_id),
-        error,
-    )
+    await _assert_awaited(monkeypatch, reviewer, _reviewer_middleware(error.thread_id), error)
