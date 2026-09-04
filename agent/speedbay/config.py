@@ -41,7 +41,10 @@ def sandbox_image() -> str:
 
 def sandbox_ttl_seconds() -> int:
     """Container TTL; ``DOCKER_SANDBOX_TTL_SECONDS`` overrides the default."""
-    return int(os.getenv(TTL_ENV, str(DEFAULT_TTL_SECONDS)))
+    value = int(os.getenv(TTL_ENV, str(DEFAULT_TTL_SECONDS)))
+    if value < 0:
+        raise ValueError(f"{TTL_ENV} must be non-negative, got {value}")
+    return value
 
 
 def sandbox_memory() -> str:
