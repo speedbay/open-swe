@@ -193,7 +193,7 @@ async def test_concurrent_duplicate_dispatches_once():
         assert await first is True
 
 
-async def test_full_pending_transition_map_drops_untracked_delivery():
+async def test_full_pending_transition_map_dispatches_untracked_delivery():
     issue = _fixture_issue()
     watermark = verify_trigger._parse_updated_at(issue["updatedAt"])
     assert watermark is not None
@@ -205,10 +205,26 @@ async def test_full_pending_transition_map_drops_untracked_delivery():
         )
 
     with patch.object(
-        verify_trigger, "process_verify_dispatch", new_callable=AsyncMock
+        verify_trigger, "process_verify_dispatch", new=AsyncMock(return_value=True)
     ) as dispatch:
-        assert await verify_trigger._process_transition_delivery(issue) is False
-        dispatch.assert_not_awaited()
+        assert await verify_trigger._process_transition_delivery(issue) is True
+        dispatch.assert_awaited_once_with(issue)
+
+
+async def test_cancelled_dispatch_releases_current_identity_for_retry():
+    issue = _fixture_issue()
+    verify_trigger._transition_records.clear()
+    cancelled = asyncio.CancelledError()
+    with patch.object(
+        verify_trigger,
+        "process_verify_dispatch",
+        new=AsyncMock(side_effect=[cancelled, True]),
+    ) as dispatch:
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await verify_trigger._process_transition_delivery(issue)
+        assert raised.value is cancelled
+        assert await verify_trigger._process_transition_delivery(issue) is True
+    assert dispatch.await_count == 2
 
 
 async def test_newer_transition_suppresses_delayed_older_transition():

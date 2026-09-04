@@ -33,6 +33,7 @@ belt and braces, self-authored state changes are dropped here too.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -160,11 +161,11 @@ async def _process_transition_delivery(issue_data: dict[str, Any]) -> bool:
         tracked = _admit_transition(issue_id, updated_at, watermark)
 
     if not tracked:
-        return False
+        return await process_verify_dispatch(issue_data)
 
     try:
         dispatched = await process_verify_dispatch(issue_data)
-    except Exception:
+    except (asyncio.CancelledError, Exception):
         if tracked and _transition_records.get(issue_id) is not None:
             current = _transition_records[issue_id]
             if current.identity == identity:
