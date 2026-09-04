@@ -78,19 +78,33 @@ async def _run_sweep(
         thread_id = verify_sweep.common.generate_thread_id_from_issue(f"verify:{issue_id}")
         thread_responses[thread_id] = RuntimeError("api down")
 
-    async def fake_graphql(_query: str, _variables: dict[str, Any]) -> dict[str, Any]:
+    async def fake_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        if "VerifySweepIssueComments" in query:
+            result = (comments or {}).get(variables["id"], {"comments": []})
+            if isinstance(result, Exception):
+                raise result
+            if "error" in result:
+                return result
+            nodes = result["comments"]
+            offset = int(variables.get("after") or 0)
+            next_offset = offset + 50
+            return {
+                "issue": {
+                    "comments": {
+                        "nodes": nodes[offset:next_offset],
+                        "pageInfo": {
+                            "hasNextPage": next_offset < len(nodes),
+                            "endCursor": str(next_offset) if next_offset < len(nodes) else None,
+                        },
+                    }
+                }
+            }
         return {
             "issues": {
                 "nodes": issues,
                 "pageInfo": {"hasNextPage": False, "endCursor": None},
             }
         }
-
-    async def fake_comments(issue_id: str) -> dict[str, Any]:
-        result = (comments or {}).get(issue_id, {"comments": []})
-        if isinstance(result, Exception):
-            raise result
-        return result
 
     async def fake_dispatch(
         issue_data: dict[str, Any], *, multitask_strategy: MultitaskStrategy = "interrupt"
@@ -110,7 +124,6 @@ async def _run_sweep(
     async def fake_viewer_id() -> str:
         return "runtime-user"
 
-    monkeypatch.setattr(verify_sweep, "get_issue_comments", fake_comments)
     monkeypatch.setattr(verify_sweep.linear_guard, "_viewer_id", fake_viewer_id)
     monkeypatch.setattr(verify_sweep, "langgraph_client", lambda: _FakeClient(thread_responses))
     monkeypatch.setattr(verify_sweep.verify_trigger, "process_verify_dispatch", fake_dispatch)
@@ -189,7 +202,7 @@ async def test_thread_inspection_error_fails_closed_as_busy(
 
 
 @pytest.mark.parametrize("verdict", ("done", "incomplete"))
-async def test_current_cycle_terminal_verdict_is_not_redispatched_after_restart(
+async def test_paginated_current_cycle_terminal_verdict_is_not_redispatched_after_restart(
     monkeypatch: pytest.MonkeyPatch, verdict: str
 ) -> None:
     issue = _issue(1)
@@ -201,11 +214,19 @@ async def test_current_cycle_terminal_verdict_is_not_redispatched_after_restart(
         comments={
             issue["id"]: {
                 "comments": [
+                    *[
+                        {
+                            "createdAt": issue["stateHistory"]["nodes"][0]["startedAt"],
+                            "body": "unrelated",
+                            "user": {"id": "runtime-user"},
+                        }
+                        for _ in range(50)
+                    ],
                     {
                         "createdAt": issue["stateHistory"]["nodes"][0]["startedAt"],
                         "body": f"## Completion verification\nVerdict: {verdict}",
                         "user": {"id": "runtime-user"},
-                    }
+                    },
                 ]
             }
         },

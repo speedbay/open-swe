@@ -22,7 +22,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..utils.linear import _graphql_request, get_issue_comments
+from ..utils.linear import _graphql_request
 from ..utils.thread_ops import langgraph_client
 from ..webhooks import common
 from . import linear_guard, verify_trigger
@@ -51,6 +51,17 @@ query StaleVerifyIssues($cutoff: DateTimeOrDuration!, $after: String) {
 }
 """
 
+_ISSUE_COMMENTS_QUERY = """
+query VerifySweepIssueComments($id: String!, $after: String) {
+  issue(id: $id) {
+    comments(first: 50, after: $after) {
+      nodes { body createdAt user { id } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
 
 async def _stale_verify_issues(cutoff_iso: str) -> list[dict[str, Any]]:
     """All issues parked in ready-for-verify since before ``cutoff_iso``."""
@@ -67,6 +78,29 @@ async def _stale_verify_issues(cutoff_iso: str) -> list[dict[str, Any]]:
         if not info.get("hasNextPage"):
             return issues
         after = info.get("endCursor")
+
+
+async def _issue_comments(issue_id: str) -> list[Any]:
+    """All durable comments for one issue."""
+    comments: list[Any] = []
+    after: str | None = None
+    while True:
+        result = await _graphql_request(_ISSUE_COMMENTS_QUERY, {"id": issue_id, "after": after})
+        page = ((result or {}).get("issue") or {}).get("comments")
+        if not isinstance(page, dict):
+            raise ValueError("could not read issue comments")
+        nodes = page.get("nodes")
+        if not isinstance(nodes, list):
+            raise ValueError("malformed issue comments")
+        comments.extend(nodes)
+        info = page.get("pageInfo")
+        if not isinstance(info, dict):
+            raise ValueError("malformed issue comments")
+        if not info.get("hasNextPage"):
+            return comments
+        after = info.get("endCursor")
+        if not isinstance(after, str) or not after:
+            raise ValueError("malformed issue comment cursor")
 
 
 def _current_ready_for_verify_started_at(issue: dict[str, Any]) -> str:
@@ -164,12 +198,7 @@ async def sweep_stale_verify_issues(*, min_age_seconds: int | None = None) -> di
                 logger.info("Sweep skipping %s: verify thread is busy", identifier)
                 skipped_busy += 1
                 continue
-            comments_result = await get_issue_comments(issue["id"])
-            if not isinstance(comments_result, dict) or "error" in comments_result:
-                raise ValueError("could not read issue comments")
-            comments = comments_result.get("comments")
-            if not isinstance(comments, list):
-                raise ValueError("malformed issue comments")
+            comments = await _issue_comments(issue["id"])
             runtime_user_id = await linear_guard._viewer_id()
             if not runtime_user_id:
                 raise ValueError("could not resolve runtime Linear user")
