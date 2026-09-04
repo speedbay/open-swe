@@ -239,9 +239,19 @@ Settings live in the Store, so they survive restarts but not a Store wipe.
 Opt-in replacement for metered API-key billing on model calls: with
 `SPEEDBAY_SUBSCRIPTION_AUTH=1` in `.env`, `make_model` builds OpenAI models
 authenticated by the team's ChatGPT subscription OAuth tokens
-(`_ChatOpenAICodex`, ChatGPT codex backend). Fail-open: unset toggle, missing
-credentials, or a provider without a subscription branch all fall back to the
-unchanged API-key path with one warning in `/tmp/openswe-backend.log`.
+(`_ChatOpenAICodex`, ChatGPT codex backend). An unset toggle falls back to the
+unchanged API-key path. An enabled provider without a subscription branch
+falls back to that path with one warning in `/tmp/openswe-backend.log`. Enabled OpenAI/Anthropic
+subscription auth is **fail-closed** (OPE-175): missing or unusable
+subscription credentials make model construction raise a redacted error
+instead of silently billing a metered API key. Inside a running event loop
+(async graph factories) the blocking credential-store probe is skipped, so
+an unusable store fails on the first model call instead — through the OAuth
+model itself. Server graph factories may also surface a construction error
+as a `DeferredErrorModel` that fails on first model call; either way no
+metered request is made. Recovery: `login_chatgpt_device()`
+(OpenAI) or run `claude` once on this machine (Anthropic), or unset the
+toggle.
 
 One-time login per machine (headless device-code flow; token store
 `~/.langchain/chatgpt-auth.json`, refresh + rotation handled automatically):
