@@ -25,7 +25,7 @@ from typing import Any
 from ..utils.linear import _graphql_request, get_issue_comments
 from ..utils.thread_ops import langgraph_client
 from ..webhooks import common
-from . import verify_trigger
+from . import linear_guard, verify_trigger
 from .config import verify_sweep_min_age_seconds
 
 logger = logging.getLogger(__name__)
@@ -88,21 +88,30 @@ def _current_ready_for_verify_started_at(issue: dict[str, Any]) -> str:
     return started_at
 
 
-def _has_current_terminal_verdict(comments: list[Any], started_at: str) -> bool:
-    """Whether comments contain one contract-valid terminal report in this state span."""
+def _has_current_terminal_verdict(
+    comments: list[Any], started_at: str, runtime_user_id: str
+) -> bool:
+    """Whether runtime-authored comments contain one contract-valid current verdict."""
     started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
     for comment in comments:
         if not isinstance(comment, dict):
             raise ValueError("malformed comment")
         created_at = comment.get("createdAt")
         body = comment.get("body")
-        if not isinstance(created_at, str) or not isinstance(body, str):
+        author = comment.get("user")
+        if (
+            not isinstance(created_at, str)
+            or not isinstance(body, str)
+            or not isinstance(author, dict)
+            or not isinstance(author.get("id"), str)
+        ):
             raise ValueError("malformed comment")
         created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
         lines = body.splitlines()
         verdicts = [line for line in lines if line.startswith("Verdict:")]
         if (
-            created >= started
+            author["id"] == runtime_user_id
+            and created >= started
             and "## Completion verification" in lines
             and verdicts in (["Verdict: done"], ["Verdict: incomplete"])
         ):
@@ -161,7 +170,12 @@ async def sweep_stale_verify_issues(*, min_age_seconds: int | None = None) -> di
             comments = comments_result.get("comments")
             if not isinstance(comments, list):
                 raise ValueError("malformed issue comments")
-            if _has_current_terminal_verdict(comments, _current_ready_for_verify_started_at(issue)):
+            runtime_user_id = await linear_guard._viewer_id()
+            if not runtime_user_id:
+                raise ValueError("could not resolve runtime Linear user")
+            if _has_current_terminal_verdict(
+                comments, _current_ready_for_verify_started_at(issue), runtime_user_id
+            ):
                 logger.info("Sweep skipping %s: current cycle has a terminal verdict", identifier)
                 continue
             logger.info("Sweep re-dispatching verification for %s", identifier)

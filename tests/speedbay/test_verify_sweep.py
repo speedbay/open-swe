@@ -106,7 +106,12 @@ async def _run_sweep(
         return True
 
     monkeypatch.setattr(verify_sweep, "_graphql_request", fake_graphql)
+
+    async def fake_viewer_id() -> str:
+        return "runtime-user"
+
     monkeypatch.setattr(verify_sweep, "get_issue_comments", fake_comments)
+    monkeypatch.setattr(verify_sweep.linear_guard, "_viewer_id", fake_viewer_id)
     monkeypatch.setattr(verify_sweep, "langgraph_client", lambda: _FakeClient(thread_responses))
     monkeypatch.setattr(verify_sweep.verify_trigger, "process_verify_dispatch", fake_dispatch)
 
@@ -199,6 +204,7 @@ async def test_current_cycle_terminal_verdict_is_not_redispatched_after_restart(
                     {
                         "createdAt": issue["stateHistory"]["nodes"][0]["startedAt"],
                         "body": f"## Completion verification\nVerdict: {verdict}",
+                        "user": {"id": "runtime-user"},
                     }
                 ]
             }
@@ -209,19 +215,20 @@ async def test_current_cycle_terminal_verdict_is_not_redispatched_after_restart(
 
 
 @pytest.mark.parametrize(
-    ("body", "historical"),
+    ("body", "historical", "author_id"),
     (
-        (None, False),
-        ("unrelated", False),
-        ("## Completion verification", False),
-        ("Verdict: done", False),
-        ("## Completion verification\nVerdict: done\nVerdict: incomplete", False),
-        ("## Completion verification\nVerdict: other", False),
-        ("## Completion verification\nVerdict: done", True),
+        (None, False, "runtime-user"),
+        ("unrelated", False, "runtime-user"),
+        ("## Completion verification", False, "runtime-user"),
+        ("Verdict: done", False, "runtime-user"),
+        ("## Completion verification\nVerdict: done\nVerdict: incomplete", False, "runtime-user"),
+        ("## Completion verification\nVerdict: other", False, "runtime-user"),
+        ("## Completion verification\nVerdict: done", True, "runtime-user"),
+        ("## Completion verification\nVerdict: done", False, "another-user"),
     ),
 )
 async def test_nonterminal_or_historical_comments_preserve_redispatch(
-    monkeypatch: pytest.MonkeyPatch, body: str | None, historical: bool
+    monkeypatch: pytest.MonkeyPatch, body: str | None, historical: bool, author_id: str
 ) -> None:
     issue = _issue(1)
     started_at = datetime.fromisoformat(issue["stateHistory"]["nodes"][0]["startedAt"])
@@ -234,6 +241,7 @@ async def test_nonterminal_or_historical_comments_preserve_redispatch(
                 if historical
                 else started_at.isoformat(),
                 "body": body,
+                "user": {"id": author_id},
             }
         ]
     )
