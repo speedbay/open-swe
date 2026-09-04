@@ -213,7 +213,7 @@ sudo -Hu openswe sh -c 'cd /home/openswe/open-swe/ui && pnpm install --frozen-lo
 ### B5. Install and enable host services
 
 Install the checked-in unit files as symlinks, then enable the backend, shared
-tunnel, dashboard, and prune timer:
+tunnel, dashboard, prune timer, and thread-retention timer:
 
 ```bash
 cd /home/openswe/open-swe
@@ -222,8 +222,10 @@ sudo ln -sfn "$PWD/speedbay/deploy/openswe-tunnel.service" /etc/systemd/system/o
 sudo ln -sfn "$PWD/speedbay/deploy/openswe-dashboard.service" /etc/systemd/system/openswe-dashboard.service
 sudo ln -sfn "$PWD/speedbay/deploy/openswe-prune.service" /etc/systemd/system/openswe-prune.service
 sudo ln -sfn "$PWD/speedbay/deploy/openswe-prune.timer" /etc/systemd/system/openswe-prune.timer
+sudo ln -sfn "$PWD/speedbay/deploy/openswe-thread-retention.service" /etc/systemd/system/openswe-thread-retention.service
+sudo ln -sfn "$PWD/speedbay/deploy/openswe-thread-retention.timer" /etc/systemd/system/openswe-thread-retention.timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now openswe-backend.service openswe-tunnel.service openswe-dashboard.service openswe-prune.timer
+sudo systemctl enable --now openswe-backend.service openswe-tunnel.service openswe-dashboard.service openswe-prune.timer openswe-thread-retention.timer
 ```
 
 Webhooks target the shared `https://openswe.speedbay.com` hostname; members do

@@ -1,0 +1,10 @@
+[Unit]
+Description=Sweep stale Open SWE threads daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+Unit=openswe-thread-retention.service
+
+[Install]
+WantedBy=timers.target
