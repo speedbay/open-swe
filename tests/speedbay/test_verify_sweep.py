@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from langgraph_sdk.schema import MultitaskStrategy
 
-from agent.speedbay import verify_sweep, verify_trigger
+from agent.speedbay import verify_sweep
 
 
 class _NotFound(Exception):
@@ -206,8 +206,6 @@ async def test_paginated_current_cycle_terminal_verdict_is_not_redispatched_afte
     monkeypatch: pytest.MonkeyPatch, verdict: str
 ) -> None:
     issue = _issue(1)
-    monkeypatch.setattr(verify_trigger, "_seen_transitions", {issue["id"]: "previous-transition"})
-    verify_trigger._seen_transitions.clear()
     counts, dispatched = await _run_sweep(
         monkeypatch,
         [issue],
