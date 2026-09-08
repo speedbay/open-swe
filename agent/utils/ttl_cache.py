@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 _CACHE: dict[str, tuple[object, float]] = {}
+# SPEEDBAY DEVIATION (OPE-134; see FORK.md): per-key generations plus a global
+# epoch make invalidate()/clear() discard in-flight loader results, so a load
+# started before invalidation can never repopulate a stale value.
 _EPOCH = 0
 _GENERATIONS: dict[str, int] = {}
 _LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
