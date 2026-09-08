@@ -430,13 +430,15 @@ async def test_dispatch_comment_once_identity_and_capacity_boundaries() -> None:
     payload = _triggering_payload("overflow")
     first = asyncio.create_task(guard.dispatch_comment_once(payload, blocked_dispatch, "overflow"))
     await entered.wait()
+    assert "overflow" not in guard._comment_delivery_states
     duplicate = asyncio.create_task(
         guard.dispatch_comment_once(copy.deepcopy(payload), blocked_dispatch, "duplicate")
     )
     await asyncio.sleep(0)
-    assert calls[-1:] == ["overflow"]
-    assert isinstance(guard._comment_delivery_states["overflow"], asyncio.Future)
+    # All-pending overload dispatches untracked, so the duplicate may run too.
+    assert calls[-2:] == ["overflow", "duplicate"]
 
     release.set()
     await asyncio.gather(first, duplicate)
     assert "overflow" not in guard._comment_delivery_states
+    assert len(guard._comment_delivery_states) == guard._SEEN_COMMENTS_MAX

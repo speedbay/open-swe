@@ -111,7 +111,12 @@ async def dispatch_comment_once(payload: dict[str, Any], dispatcher, *args, **kw
                 if seen_state == "succeeded":
                     del _comment_delivery_states[seen_id]
                     break
-        overflow_claim = len(_comment_delivery_states) >= _SEEN_COMMENTS_MAX
+        if len(_comment_delivery_states) >= _SEEN_COMMENTS_MAX:
+            # Every tracked record is pending: invoke this identity untracked
+            # rather than drop it or grow past the 512-entry ceiling. This
+            # process-local overload case may duplicate.
+            await dispatcher(*args, **kwargs)
+            return
 
         claim = asyncio.get_running_loop().create_future()
         _comment_delivery_states[comment_id] = claim
@@ -126,10 +131,7 @@ async def dispatch_comment_once(payload: dict[str, Any], dispatcher, *args, **kw
         if not succeeded:
             return
 
-        if overflow_claim:
-            del _comment_delivery_states[comment_id]
-        else:
-            _comment_delivery_states[comment_id] = "succeeded"
+        _comment_delivery_states[comment_id] = "succeeded"
         claim.set_result(True)
         return
 
