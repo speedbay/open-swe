@@ -152,3 +152,5 @@ def test_linear_issue_prompt_contains_acceptance_criteria_contract() -> None:
     assert "post-merge verification can map criteria to evidence directly" in prompt
     assert "verification commands go in the PR body's verification section" in prompt
     assert "re-runs declared commands at the merge SHA" in prompt
+    assert "re-read each acceptance criterion verbatim" in prompt
+    assert "never write or adjust a test" in prompt
