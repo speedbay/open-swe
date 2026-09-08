@@ -11,7 +11,7 @@ from langchain_core.messages.content import create_text_block
 
 from . import common
 
-# SPEEDBAY DEVIATION (OPE-51): Linear-trigger acceptance-criteria contract.
+# SPEEDBAY DEVIATION (OPE-51, OPE-182): Linear-trigger acceptance-criteria contract.
 # The issue description embeds the ACs but never instructs the agent to satisfy
 # or evidence them; this contract makes every agent-opened PR map criteria to
 # evidence so post-merge verification (agent/speedbay/resources/verify_prompt.md)
@@ -26,7 +26,15 @@ ACCEPTANCE_CRITERIA_CONTRACT = (
     "diff-provable ones; the test name and command for behavior ones) so "
     "post-merge verification can map criteria to evidence directly.\n"
     "3. Runnable verification commands go in the PR body's verification section; "
-    "the verifier re-runs declared commands at the merge SHA."
+    "the verifier re-runs declared commands at the merge SHA.\n"
+    "4. Before opening the PR, re-read each acceptance criterion verbatim and "
+    "confirm the final diff and tests satisfy it exactly as written; post-merge "
+    "verification re-checks each criterion against the complete merged diff, so "
+    "any deviation fails the ticket even when the test suite passes.\n"
+    "5. Tests must assert the criterion's stated behavior; never write or adjust a test "
+    "to match an implementation that deviates from a criterion. If a criterion appears "
+    "wrong or unachievable, stop and say so on the ticket instead of implementing the "
+    "deviation."
 )
 
 
