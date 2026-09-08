@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -206,15 +207,13 @@ async def test_paginated_current_cycle_terminal_verdict_is_not_redispatched_afte
     monkeypatch: pytest.MonkeyPatch, verdict: str
 ) -> None:
     issue = _issue(1)
-    # Simulate a backend restart: the webhook trigger had recorded this
-    # transition in process memory (OPE-159 renamed `_seen_transitions` to
-    # `_transition_records`), and the restart wiped it. Suppression must then
-    # come from the durable Linear report alone.
-    verify_trigger._transition_records[issue["id"]] = verify_trigger._TransitionRecord(
-        (issue["id"], issue["updatedAt"]), datetime.now(UTC), "succeeded"
-    )
-    verify_trigger._transition_records.clear()
-    assert not verify_trigger._transition_records
+    # Simulate a backend restart: reload the trigger module so every piece of
+    # process-local transition-dedup state (formerly `_seen_transitions`, now
+    # `_transition_records`) is recreated empty, exactly as a fresh interpreter
+    # would see it. Suppression must then come from the durable Linear report
+    # alone. The sweep resolves `verify_trigger.process_verify_dispatch` by
+    # module attribute, so it observes the reloaded state.
+    importlib.reload(verify_trigger)
     counts, dispatched = await _run_sweep(
         monkeypatch,
         [issue],
