@@ -25,7 +25,7 @@ from typing import Any
 from ..utils.linear import _graphql_request
 from ..utils.thread_ops import langgraph_client
 from ..webhooks import common
-from . import verify_trigger
+from . import linear_guard, verify_trigger
 from .config import verify_sweep_min_age_seconds
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,24 @@ query StaleVerifyIssues($cutoff: DateTimeOrDuration!, $after: String) {
     after: $after
   ) {
     pageInfo { hasNextPage endCursor }
-    nodes { id identifier updatedAt team { id name key } }
+    nodes {
+      id
+      identifier
+      updatedAt
+      team { id name key }
+      stateHistory(last: 1) { nodes { startedAt endedAt state { name } } }
+    }
+  }
+}
+"""
+
+_ISSUE_COMMENTS_QUERY = """
+query VerifySweepIssueComments($id: String!, $after: String) {
+  issue(id: $id) {
+    comments(first: 50, after: $after) {
+      nodes { body createdAt user { id } }
+      pageInfo { hasNextPage endCursor }
+    }
   }
 }
 """
@@ -61,6 +78,79 @@ async def _stale_verify_issues(cutoff_iso: str) -> list[dict[str, Any]]:
         if not info.get("hasNextPage"):
             return issues
         after = info.get("endCursor")
+
+
+async def _issue_comments(issue_id: str) -> list[Any]:
+    """All durable comments for one issue."""
+    comments: list[Any] = []
+    after: str | None = None
+    while True:
+        result = await _graphql_request(_ISSUE_COMMENTS_QUERY, {"id": issue_id, "after": after})
+        page = ((result or {}).get("issue") or {}).get("comments")
+        if not isinstance(page, dict):
+            raise ValueError("could not read issue comments")
+        nodes = page.get("nodes")
+        if not isinstance(nodes, list):
+            raise ValueError("malformed issue comments")
+        comments.extend(nodes)
+        info = page.get("pageInfo")
+        if not isinstance(info, dict):
+            raise ValueError("malformed issue comments")
+        if not info.get("hasNextPage"):
+            return comments
+        after = info.get("endCursor")
+        if not isinstance(after, str) or not after:
+            raise ValueError("malformed issue comment cursor")
+
+
+def _current_ready_for_verify_started_at(issue: dict[str, Any]) -> str:
+    """The durable start time of the issue's current verify state span."""
+    spans = (issue.get("stateHistory") or {}).get("nodes")
+    if not isinstance(spans, list) or len(spans) != 1:
+        raise ValueError("missing current state span")
+    span = spans[0]
+    if not isinstance(span, dict):
+        raise ValueError("malformed current state span")
+    started_at = span.get("startedAt")
+    if (
+        span.get("endedAt") is not None
+        or (span.get("state") or {}).get("name") != "ready-for-verify"
+        or not isinstance(started_at, str)
+    ):
+        raise ValueError("current state span is not ready-for-verify")
+    datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    return started_at
+
+
+def _has_current_terminal_verdict(
+    comments: list[Any], started_at: str, runtime_user_id: str
+) -> bool:
+    """Whether runtime-authored comments contain one contract-valid current verdict."""
+    started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    for comment in comments:
+        if not isinstance(comment, dict):
+            raise ValueError("malformed comment")
+        created_at = comment.get("createdAt")
+        body = comment.get("body")
+        author = comment.get("user")
+        if (
+            not isinstance(created_at, str)
+            or not isinstance(body, str)
+            or not isinstance(author, dict)
+            or not isinstance(author.get("id"), str)
+        ):
+            raise ValueError("malformed comment")
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        lines = body.splitlines()
+        verdicts = [line for line in lines if line.startswith("Verdict:")]
+        if (
+            author["id"] == runtime_user_id
+            and created >= started
+            and "## Completion verification" in lines
+            and verdicts in (["Verdict: done"], ["Verdict: incomplete"])
+        ):
+            return True
+    return False
 
 
 async def _verify_thread_busy(issue_id: str) -> bool:
@@ -87,10 +177,10 @@ async def sweep_stale_verify_issues(*, min_age_seconds: int | None = None) -> di
     """Re-dispatch verification for issues stuck in ready-for-verify.
 
     Walks every issue whose state is ``ready-for-verify`` and whose
-    ``updatedAt`` is older than the cutoff, skips those with a busy verify
-    thread, and dispatches the rest with server-side conflict rejection so a
-    race cannot interrupt a run. Per-issue work is wrapped so one bad issue
-    never aborts the sweep.
+    ``updatedAt`` is older than the cutoff, skips busy verify threads and
+    current-cycle terminal reports, then dispatches the rest with server-side
+    conflict rejection so a race cannot interrupt a run. Per-issue work is
+    wrapped so one bad issue never aborts the sweep.
 
     Returns counts: ``{"checked", "skipped_busy", "dispatched", "errors"}``.
     """
@@ -107,6 +197,15 @@ async def sweep_stale_verify_issues(*, min_age_seconds: int | None = None) -> di
             if await _verify_thread_busy(issue["id"]):
                 logger.info("Sweep skipping %s: verify thread is busy", identifier)
                 skipped_busy += 1
+                continue
+            comments = await _issue_comments(issue["id"])
+            runtime_user_id = await linear_guard._viewer_id()
+            if not runtime_user_id:
+                raise ValueError("could not resolve runtime Linear user")
+            if _has_current_terminal_verdict(
+                comments, _current_ready_for_verify_started_at(issue), runtime_user_id
+            ):
+                logger.info("Sweep skipping %s: current cycle has a terminal verdict", identifier)
                 continue
             logger.info("Sweep re-dispatching verification for %s", identifier)
             try:
