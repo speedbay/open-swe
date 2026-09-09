@@ -28,7 +28,7 @@ all survived, and re-add any a merge dropped (each is marked in-code with a
 | # | Registration | Location |
 |---|---|---|
 | 1 | `"docker"` entry for the Docker sandbox backend | the `SANDBOX_FACTORIES` dict in `agent/utils/sandbox.py` |
-| 2 | `SpeedbayConventionsMiddleware`, `PRStandardsMiddleware`, and `QualityGatesMiddleware` in the `middleware=[...]` list | the list inside `get_agent()` in `agent/server.py`, plus their direct imports above |
+| 2 | `SpeedbayConventionsMiddleware`, `PlanModePolicyMiddleware` (OPE-183), `PRStandardsMiddleware`, and `QualityGatesMiddleware` in the `middleware=[...]` list | the list inside `get_agent()` in `agent/server.py`, plus their direct imports above |
 | 3 | `docker` branch calling `validate_startup_config()` (OPE-7), which also schedules the boot-time verify-sweep cron ensure (OPE-53) | inside `validate_sandbox_startup_config()` in `agent/utils/sandbox.py`; cron-ensure logic lives in `agent/speedbay/verify_sweep_cron.py` |
 | 4 | `strip_server_runtime(...)` on the factory config (OPE-15) | `traced_graph_factory` in `agent/utils/tracing.py` + `get_scheduler` in `agent/scheduler.py`; any NEW langgraph.json graph that bypasses `traced_graph_factory` must add the strip |
 | 5 | `speedbay_verify_trigger.maybe_handle(...)` verify-transition hook (OPE-39) | inside `linear_webhook()` in `agent/webhooks/linear_routes.py`, immediately after JSON parsing and before the Comment-type filter, plus its import above; logic lives in `agent/speedbay/verify_trigger.py` |
