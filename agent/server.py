@@ -104,6 +104,7 @@ from .runtime.execution import graph_loaded_for_execution
 # the module directly rather than via .middleware's lazy registry, so
 # agent/middleware/__init__.py stays unmodified and merge-clean.
 from .speedbay.conventions import SpeedbayConventionsMiddleware
+from .speedbay.plan_mode_policy import PlanModePolicyMiddleware
 from .speedbay.pr_standards import PRStandardsMiddleware
 from .speedbay.quality_gates import QualityGatesMiddleware
 
@@ -1015,12 +1016,10 @@ async def get_agent(config: RunnableConfig) -> Pregel:
     user_email = configurable.get("user_email")
     user_email = user_email if isinstance(user_email, str) else ""
 
-    # Plan mode is entered only when the model decides to (the `enter_plan_mode`
-    # tool sets it in run state). The configurable value just carries that
-    # decision across a thread's messages and the approve/reject follow-ups; a
-    # fresh run with nothing set starts out of plan mode. Installed
-    # unconditionally and state-aware: it also restricts tools after a mid-run
-    # `enter_plan_mode` call, not just when plan mode is set up front.
+    # Plan mode is entered only by explicit dispatch. The configurable value
+    # carries that decision across the thread's approval/rejection follow-ups;
+    # a fresh run with nothing set starts out of plan mode. Installed
+    # unconditionally so approval can lift the plan-mode tool restrictions.
     plan_mode = configurable.get("plan_mode") is True
     if plan_mode:
         logger.info("Plan mode enabled for thread %s", thread_id)
@@ -1117,6 +1116,7 @@ async def get_agent(config: RunnableConfig) -> Pregel:
                 # no-AI-attribution rule to the system prompt. Kept here rather than in
                 # agent/prompt.py so upstream's hot prompt file stays unmodified.
                 SpeedbayConventionsMiddleware(),
+                PlanModePolicyMiddleware(),  # SPEEDBAY REGISTRATION (OPE-183)
                 # SPEEDBAY REGISTRATION: atomicity caps + commit hygiene before
                 # open_pull_request (OPE-8); deterministic and cheap, so it runs
                 # before the expensive quality gates below. Logic lives in
