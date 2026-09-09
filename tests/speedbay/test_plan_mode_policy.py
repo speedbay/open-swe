@@ -5,7 +5,7 @@ from typing import Any, cast
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 
 from agent.prompt import PLAN_MODE_GUIDANCE_SECTION, PLAN_MODE_SECTION
 from agent.speedbay.plan_mode_policy import PlanModePolicyMiddleware
@@ -40,11 +40,15 @@ def _apply(request: ModelRequest) -> ModelRequest:
     return PlanModePolicyMiddleware._apply(request)
 
 
+def _tool_names(request: ModelRequest) -> list[str]:
+    return [tool.name for tool in request.tools if isinstance(tool, BaseTool)]
+
+
 def test_enter_plan_mode_never_offered() -> None:
     for plan_mode in (False, True):
         result = _apply(_request("base", plan_mode=plan_mode))
 
-        assert [tool.name for tool in result.tools] == ["approve_plan", "save_plan"]
+        assert _tool_names(result) == ["approve_plan", "save_plan"]
 
 
 def test_guidance_section_stripped() -> None:
@@ -57,7 +61,6 @@ def test_guidance_section_stripped() -> None:
     assert once.system_message is not None
     assert once.system_message.text == "before\n---\n\nafter"
     assert twice.system_message is once.system_message
-    assert twice.system_message.text == once.system_message.text
 
 
 def test_active_plan_mode_untouched() -> None:
@@ -68,7 +71,7 @@ def test_active_plan_mode_untouched() -> None:
     assert result.system_message is not None
     assert result.system_message.text == f"prefix{active}suffix"
     assert active in result.system_message.text
-    assert [tool.name for tool in result.tools] == ["approve_plan", "save_plan"]
+    assert _tool_names(result) == ["approve_plan", "save_plan"]
 
 
 def test_absent_guidance_noop() -> None:
@@ -84,4 +87,5 @@ def test_absent_guidance_noop() -> None:
 
     assert result is request
     assert result.system_message is request.system_message
+    assert result.system_message is not None
     assert result.system_message.text == text
