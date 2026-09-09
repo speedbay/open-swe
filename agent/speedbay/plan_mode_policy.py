@@ -1,4 +1,12 @@
-"""Speed Bay policy for restricting plan mode to explicit dispatches."""
+"""Speed Bay policy for restricting plan mode in Linear-triggered runs.
+
+Linear tickets arrive pre-planned and verified under the Zero-Context contract,
+so model-initiated plan mode only duplicates that planning and stalls the run
+on human plan approval. Slack and dashboard runs keep upstream behavior: a user
+explicitly asking for a plan (exercised by the upstream Playwright E2E
+``plan_review.spec.ts``) is the same class of intent as the dashboard Plan
+toggle.
+"""
 
 from __future__ import annotations
 
@@ -25,11 +33,18 @@ def _tool_name(tool: BaseTool | dict[str, Any] | Any) -> str | None:
     return name if isinstance(name, str) else None
 
 
-class PlanModePolicyMiddleware(AgentMiddleware):
-    """Remove model-initiated plan mode from every model request."""
+_GATED_SOURCES = frozenset({"linear"})
 
-    @staticmethod
-    def _apply(request: ModelRequest) -> ModelRequest:
+
+class PlanModePolicyMiddleware(AgentMiddleware):
+    """Remove model-initiated plan mode from gated (Linear-triggered) runs."""
+
+    def __init__(self, *, source: str) -> None:
+        self._active = source in _GATED_SOURCES
+
+    def _apply(self, request: ModelRequest) -> ModelRequest:
+        if not self._active:
+            return request
         tools = [tool for tool in request.tools if _tool_name(tool) != "enter_plan_mode"]
         system_message = request.system_message
         stripped = (

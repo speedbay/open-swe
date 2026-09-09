@@ -1116,7 +1116,9 @@ async def get_agent(config: RunnableConfig) -> Pregel:
                 # no-AI-attribution rule to the system prompt. Kept here rather than in
                 # agent/prompt.py so upstream's hot prompt file stays unmodified.
                 SpeedbayConventionsMiddleware(),
-                PlanModePolicyMiddleware(),  # SPEEDBAY REGISTRATION (OPE-183)
+                # SPEEDBAY REGISTRATION (OPE-183): strips model-initiated plan
+                # mode from Linear-triggered runs; other sources pass through.
+                PlanModePolicyMiddleware(source=source),
                 # SPEEDBAY REGISTRATION: atomicity caps + commit hygiene before
                 # open_pull_request (OPE-8); deterministic and cheap, so it runs
                 # before the expensive quality gates below. Logic lives in

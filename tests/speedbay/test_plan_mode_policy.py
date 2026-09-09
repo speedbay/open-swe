@@ -37,7 +37,7 @@ def _request(text: str, *, plan_mode: bool = False) -> ModelRequest:
 
 
 def _apply(request: ModelRequest) -> ModelRequest:
-    return PlanModePolicyMiddleware._apply(request)
+    return PlanModePolicyMiddleware(source="linear")._apply(request)
 
 
 def _tool_names(request: ModelRequest) -> list[str]:
@@ -72,6 +72,19 @@ def test_active_plan_mode_untouched() -> None:
     assert result.system_message.text == f"prefix{active}suffix"
     assert active in result.system_message.text
     assert _tool_names(result) == ["approve_plan", "save_plan"]
+
+
+def test_non_linear_sources_untouched() -> None:
+    guidance = PLAN_MODE_GUIDANCE_SECTION.format(plan_review_url="https://example.test/plans/123")
+    for source in ("slack", "dashboard"):
+        request = _request(f"before\n{guidance}after")
+
+        result = PlanModePolicyMiddleware(source=source)._apply(request)
+
+        assert result is request
+        assert _tool_names(result) == ["enter_plan_mode", "approve_plan", "save_plan"]
+        assert result.system_message is not None
+        assert guidance in result.system_message.text
 
 
 def test_absent_guidance_noop() -> None:
